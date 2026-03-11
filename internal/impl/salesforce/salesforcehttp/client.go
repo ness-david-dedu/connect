@@ -38,8 +38,6 @@ const salesforceAPIBasePath = "/services"
 // It applies standard header parameters to all calls, Authorization, User-Agent and Accept.
 // It uses the helper functions to check against possible response codes and handling the retry-after mechanism
 func (s *Client) callSalesforceAPI(ctx context.Context, u *url.URL) ([]byte, error) {
-	s.log.Debugf("API call: %s", u.String())
-
 	if s.getBearerToken() == "" {
 		if err := s.updateAndSetBearerToken(ctx); err != nil {
 			return nil, err
@@ -435,8 +433,6 @@ func (s *Client) GetNextBatch(ctx context.Context, cursor Cursor) (service.Messa
 
 // callSalesforceAPIWithBody sends an authenticated POST request with a JSON body.
 func (s *Client) callSalesforceAPIWithBody(ctx context.Context, u *url.URL, body []byte) ([]byte, error) {
-	s.log.Debugf("API POST call: %s", u.String())
-
 	if s.getBearerToken() == "" {
 		if err := s.updateAndSetBearerToken(ctx); err != nil {
 			return nil, err
