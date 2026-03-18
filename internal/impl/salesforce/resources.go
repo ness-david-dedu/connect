@@ -399,7 +399,7 @@ func (s *salesforceProcessor) loadState(ctx context.Context) (ProcessorState, er
 	// Try loading new format first
 	raw, err := s.accessCache(ctx, "sf_state")
 	if err != nil {
-		return ProcessorState{}, nil
+		return ProcessorState{}, fmt.Errorf("failed to read state from cache: %w", err)
 	}
 	if raw != "" {
 		var state ProcessorState
@@ -412,7 +412,7 @@ func (s *salesforceProcessor) loadState(ctx context.Context) (ProcessorState, er
 	// Backward compatibility: try old "sf_cursor" key
 	oldRaw, err := s.accessCache(ctx, "sf_cursor")
 	if err != nil {
-		return ProcessorState{}, nil
+		return ProcessorState{}, fmt.Errorf("failed to read legacy cursor from cache: %w", err)
 	}
 	if oldRaw != "" {
 		var cursor salesforcehttp.Cursor

@@ -25,6 +25,7 @@ import (
 
 	"github.com/redpanda-data/connect/v4/internal/impl/salesforce/salesforcegrpc"
 	"github.com/redpanda-data/connect/v4/internal/impl/salesforce/salesforcehttp"
+	"github.com/redpanda-data/connect/v4/internal/license"
 )
 
 // Config field name constants — prefixed sfp (salesforce processor) to avoid
@@ -304,9 +305,9 @@ pipeline:
 }
 
 func newSalesforceProcessor(conf *service.ParsedConfig, mgr *service.Resources) (*salesforceProcessor, error) {
-	//if err := license.CheckRunningEnterprise(mgr); err != nil {
-	//	return nil, err
-	//}
+	if err := license.CheckRunningEnterprise(mgr); err != nil {
+		return nil, err
+	}
 
 	cfg, err := salesforceProcessorConfigFromParsed(conf)
 	if err != nil {
