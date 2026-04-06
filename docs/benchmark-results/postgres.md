@@ -78,22 +78,37 @@ Steady state: **~211,000 msg/sec, 127 MB/sec**, ~600 B per message.
 
 ---
 
-## Snapshot — Small Rows (cart table), CPU Scaling
+## Snapshot — Small Rows (cart table), CPU & Batch Size Scaling
 
-Same cart dataset, varying `GOMAXPROCS` to measure per-core throughput scaling.
-
-### Run 1
+Same cart dataset, varying `GOMAXPROCS` and `batching.count` to produce a throughput matrix.
 
 **Environment:** Intel Core i7-10850H @ 2.70GHz, 32 GB RAM, WSL2 (Linux 6.6.87.2), x86_64, PostgreSQL 16 running in Docker (localhost)
 
 **Dataset:** 10,000,000 rows × ~600 B
 
-| GOMAXPROCS  | msg/sec | MB/sec |
-|-------------|---------|--------|
-| 1           | 134,287 |     81 |
-| 2           | 212,852 |    128 |
-| 4           | 276,259 |    166 |
-| 8           | 300,760 |    181 |
-| (unbounded) | 211,111 |    127 |
+### msg/sec
 
-**Observations:** The connector scales with core count but with diminishing returns — 1→2 cores: 1.58x, 2→4 cores: 1.30x, 4→8 cores: 1.09x. Throughput is starting to plateau at 8 cores (300K msg/sec), suggesting the bottleneck is shifting from CPU to PostgreSQL read throughput or network overhead from the Docker socket.
+| GOMAXPROCS  | batch=1000 | batch=5000 | batch=10000 |
+|-------------|------------|------------|-------------|
+| 1           |    134,287 |    130,555 |     129,603 |
+| 2           |    212,852 |    218,055 |     214,555 |
+| 4           |    276,259 |    296,138 |     264,454 |
+| 8           |    300,760 |    318,660 |     284,733 |
+| (unbounded) |    211,111 |            |             |
+
+### MB/sec
+
+| GOMAXPROCS  | batch=1000 | batch=5000 | batch=10000 |
+|-------------|------------|------------|-------------|
+| 1           |         81 |         78 |          78 |
+| 2           |        128 |        131 |         129 |
+| 4           |        166 |        178 |         159 |
+| 8           |        181 |        192 |         171 |
+| (unbounded) |        127 |            |             |
+
+**Observations:**
+
+- **Core scaling:** throughput scales well up to 4 cores then plateaus — 1→2: ~1.58x, 2→4: ~1.30x, 4→8: ~1.09x across all batch sizes.
+- **Batch size sweet spot:** batch=5000 consistently outperforms both batch=1000 and batch=10000. At 8 cores: 318K (batch=5000) vs 300K (batch=1000) vs 284K (batch=10000).
+- **Batch=10000 regresses at higher core counts:** larger batches increase memory pressure and pipeline stall time waiting to fill a batch, which outweighs the reduced per-batch overhead.
+- **At 1 core, batch size has no effect** (~130K msg/sec across all three), confirming the single-core bottleneck is not batch assembly but connector read throughput.

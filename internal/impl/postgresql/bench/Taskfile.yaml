@@ -123,55 +123,19 @@ tasks:
       - task psql:drop-slot
       - GOMAXPROCS=8 go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml
 
-  # CPU scaling on cart dataset (10M small rows) — best dataset for CPU-bound benchmarking
-  bench:cart:cores:1:
-    desc: Run cart snapshot benchmark with GOMAXPROCS=1
+  # Parameterised benchmark — specify CORES and BATCH freely
+  # Usage: task bench:cart CORES=4 BATCH=5000
+  bench:cart:
+    desc: "Run cart snapshot benchmark with given CORES and BATCH (e.g. task bench:cart CORES=4 BATCH=5000)"
+    vars:
+      CORES: '{{.CORES | default ""}}'
+      BATCH: '{{.BATCH | default "1000"}}'
     cmds:
       - task psql:drop-slot
-      - GOMAXPROCS=1 go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml
-
-  bench:cart:cores:2:
-    desc: Run cart snapshot benchmark with GOMAXPROCS=2
-    cmds:
-      - task psql:drop-slot
-      - GOMAXPROCS=2 go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml
-
-  bench:cart:cores:4:
-    desc: Run cart snapshot benchmark with GOMAXPROCS=4
-    cmds:
-      - task psql:drop-slot
-      - GOMAXPROCS=4 go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml
-
-  bench:cart:cores:8:
-    desc: Run cart snapshot benchmark with GOMAXPROCS=8
-    cmds:
-      - task psql:drop-slot
-      - GOMAXPROCS=8 go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml
-
-  # Batch size benchmarks — vary batching.count to find the sweet spot
-  bench:batch:100:
-    desc: Run snapshot benchmark with batching.count=100
-    cmds:
-      - task psql:drop-slot
-      - go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml --set input.postgres_cdc.batching.count=100
-
-  bench:batch:500:
-    desc: Run snapshot benchmark with batching.count=500
-    cmds:
-      - task psql:drop-slot
-      - go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml --set input.postgres_cdc.batching.count=500
-
-  bench:batch:1000:
-    desc: Run snapshot benchmark with batching.count=1000 (default)
-    cmds:
-      - task psql:drop-slot
-      - go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml --set input.postgres_cdc.batching.count=1000
-
-  bench:batch:5000:
-    desc: Run snapshot benchmark with batching.count=5000
-    cmds:
-      - task psql:drop-slot
-      - go run ../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml --set input.postgres_cdc.batching.count=5000
+      - |
+        GOMAXPROCS={{.CORES}} go run ../../../../cmd/redpanda-connect/main.go run \
+          --set input.postgres_cdc.batching.count={{.BATCH}} \
+          ./benchmark_config.yaml
 
   # Parallel snapshot table benchmarks — vary max_parallel_snapshot_tables
   bench:parallel-tables:1:
