@@ -1,0 +1,214 @@
+version: "3"
+
+vars:
+  KAFKA_BOOTSTRAP: '{{.KAFKA_BOOTSTRAP | default "localhost:9092"}}'
+  CONNECT_URL: '{{.CONNECT_URL | default "http://localhost:8083"}}'
+  ICEBERG_REST_URL: '{{.ICEBERG_REST_URL | default "http://localhost:8181"}}'
+
+tasks:
+  up:
+    desc: Build and start all infrastructure, wait for Kafka Connect to be ready
+    cmds:
+      - docker compose up -d --build
+      - until curl -sf {{.CONNECT_URL}}/ > /dev/null 2>&1; do sleep 3; done
+      - echo "Kafka Connect ready at {{.CONNECT_URL}}"
+
+  down:
+    desc: Stop and remove all containers and volumes
+    cmds:
+      - docker compose down -v --remove-orphans
+
+  connector:create:
+    desc: Register the Iceberg sink connector
+    cmds:
+      - |
+        curl -sf -X POST {{.CONNECT_URL}}/connectors \
+          -H "Content-Type: application/json" \
+          -d @connector.json | jq .
+
+  connector:status:
+    desc: Show connector and task status
+    cmds:
+      - curl -sf {{.CONNECT_URL}}/connectors/iceberg-sink-bench/status | jq .
+
+  connector:delete:
+    desc: Delete the Iceberg sink connector (without stopping infrastructure)
+    cmds:
+      - curl -s -X DELETE {{.CONNECT_URL}}/connectors/iceberg-sink-bench || true
+
+  connector:pause:
+    desc: Pause the connector (stop consuming without deleting offsets)
+    cmds:
+      - curl -sf -X PUT {{.CONNECT_URL}}/connectors/iceberg-sink-bench/pause | jq .
+
+  connector:resume:
+    desc: Resume a paused connector
+    cmds:
+      - curl -sf -X PUT {{.CONNECT_URL}}/connectors/iceberg-sink-bench/resume | jq .
+
+  data:load:
+    desc: "Produce events to bench-events (e.g. task data:load COUNT=5000000)"
+    vars:
+      COUNT: '{{.COUNT | default "1000000"}}'
+    env:
+      COUNT: '{{.COUNT}}'
+      KAFKA_BOOTSTRAP: '{{.KAFKA_BOOTSTRAP}}'
+    cmds:
+      - go run ../../../../../cmd/redpanda-connect/main.go run ./producer.yaml
+
+  topic:reset-offsets:
+    desc: Reset consumer group offsets to end of bench-events (so next connector run only processes new messages)
+    cmds:
+      - |
+        docker exec kc-kafka kafka-consumer-groups \
+          --bootstrap-server localhost:29092 \
+          --group connect-iceberg-sink-bench \
+          --topic bench-events \
+          --reset-offsets --to-latest --execute 2>/dev/null || true
+
+  bench:lag:
+    desc: Show current consumer lag for the Iceberg sink connector group
+    cmds:
+      - docker exec kc-kafka kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group connect-iceberg-sink-bench
+
+  # Measure throughput by timing how long it takes to drain the topic.
+  #
+  # Strategy: the topic is pre-loaded with a known number of messages (TOTAL).
+  # We poll the consumer group lag every INTERVAL seconds.  Each poll we print
+  # the current lag and a rolling msg/s rate (delta_lag / delta_time).  When lag
+  # hits zero we print the overall elapsed time and average throughput.
+  #
+  # NOTE: The Tabular Iceberg sink connector only commits Kafka offsets when it
+  # commits to Iceberg (iceberg.control.commit.interval-ms, default 10s).
+  # Between commits, lag appears frozen even though the connector is consuming.
+  # Set INTERVAL >= commit interval (10) for meaningful msg/s values.
+  #
+  # Usage:
+  #   task bench:measure TOTAL=1000000
+  #   task bench:measure TOTAL=5000000 INTERVAL=10
+  bench:measure:
+    desc: "Poll lag and print msg/s until topic is drained (e.g. task bench:measure TOTAL=1000000)"
+    vars:
+      TOTAL: '{{.TOTAL | default "1000000"}}'
+      INTERVAL: '{{.INTERVAL | default "15"}}'
+    cmds:
+      - |
+        GROUP=connect-iceberg-sink-bench
+        INTERVAL={{.INTERVAL}}
+        TOTAL={{.TOTAL}}
+
+        get_lag() {
+          # The Tabular connector only commits Kafka offsets at Iceberg commit time,
+          # so the LAG column ($6) is "-" mid-batch. Compute it manually:
+          #   lag = LOG-END-OFFSET($5) - CURRENT-OFFSET($4)
+          # When CURRENT-OFFSET is "-" (no commit yet) treat it as 0.
+          docker exec kc-kafka kafka-consumer-groups \
+            --bootstrap-server localhost:29092 \
+            --describe --group "$GROUP" 2>/dev/null \
+            | awk '/bench-events/ {
+                cur = ($4 == "-") ? 0 : $4
+                sum += $5 - cur
+              } END {print (NR == 0 ? -1 : sum)}'
+        }
+
+        START=""
+        INITIAL_LAG=""
+        PREV_LAG=""
+        PREV_TIME=""
+
+        printf "%-10s  %-14s  %s\n" "TIME" "LAG" "MSG/S"
+
+        while true; do
+          sleep "$INTERVAL"
+          LAG=$(get_lag)
+          NOW=$(date +%s)
+
+          # Wait until lag becomes positive (data arrived and connector started consuming)
+          if [ -z "$START" ]; then
+            if [ "$LAG" -gt 0 ] 2>/dev/null; then
+              START=$NOW
+              INITIAL_LAG=$LAG
+              PREV_LAG=$LAG
+              PREV_TIME=$NOW
+              printf "%-10s  %-14s  (timing started)\n" "$(date +%H:%M:%S)" "$LAG"
+            else
+              printf "%-10s  %-14s  (waiting for lag...)\n" "$(date +%H:%M:%S)" "$LAG"
+            fi
+            continue
+          fi
+
+          DELTA_T=$((NOW - PREV_TIME))
+          DELTA_LAG=$((PREV_LAG - LAG))
+          if [ "$DELTA_T" -gt 0 ]; then
+            RATE=$((DELTA_LAG / DELTA_T))
+          else
+            RATE=0
+          fi
+
+          printf "%-10s  %-14s  %s msg/s\n" "$(date +%H:%M:%S)" "$LAG" "$RATE"
+
+          if [ "$LAG" -eq 0 ]; then
+            ELAPSED=$((NOW - START))
+            AVG=$(( INITIAL_LAG / (ELAPSED > 0 ? ELAPSED : 1) ))
+            echo "---"
+            echo "Total messages : $INITIAL_LAG"
+            echo "Elapsed        : ${ELAPSED}s"
+            echo "Avg throughput : ${AVG} msg/s"
+            break
+          fi
+
+          PREV_LAG=$LAG
+          PREV_TIME=$NOW
+        done
+
+  control-topic:reset:
+    desc: Delete and recreate the control-iceberg topic to clear stale coordinator state
+    cmds:
+      - docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic control-iceberg 2>/dev/null || true
+      - |
+        until ! docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+            --list 2>/dev/null | grep -q '^control-iceberg$'; do
+          sleep 1
+        done
+      - |
+        docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+          --create --topic control-iceberg \
+          --partitions 1 \
+          --replication-factor 1 \
+          --config cleanup.policy=compact
+
+  bench:run:
+    desc: "Full benchmark: pause connector, load COUNT events, resume and measure (e.g. task bench:run COUNT=1000000)"
+    vars:
+      COUNT: '{{.COUNT | default "1000000"}}'
+    cmds:
+      - echo "==> Deleting connector and waiting for consumer group to go inactive..."
+      - task connector:delete
+      - |
+        # Wait until the consumer group has no active members before resetting offsets.
+        # Kafka rejects --reset-offsets on an active group; || true in reset-offsets swallows the error silently.
+        until [ "$(docker exec kc-kafka kafka-consumer-groups \
+            --bootstrap-server localhost:29092 \
+            --describe --group connect-iceberg-sink-bench 2>/dev/null \
+            | grep -c STABLE || true)" -eq 0 ]; do
+          echo "  waiting for group to go inactive..."
+          sleep 2
+        done
+      - task topic:reset-offsets
+      - echo "==> Resetting control topic to clear stale coordinator state..."
+      - task control-topic:reset
+      - echo "==> Loading {{.COUNT}} events into bench-events..."
+      - task data:load COUNT={{.COUNT}}
+      - echo "==> Registering connector and measuring throughput..."
+      - task connector:create
+      - task bench:measure TOTAL={{.COUNT}}
+
+  logs:connect:
+    desc: Follow Kafka Connect worker logs
+    cmds:
+      - docker compose logs -f kafka-connect
+
+  logs:setup:
+    desc: Show setup container output
+    cmds:
+      - docker compose logs setup

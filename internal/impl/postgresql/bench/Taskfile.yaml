@@ -160,8 +160,6 @@ tasks:
       PG_DSN: '{{.PG_DSN}}'
     cmds:
       - task psql:drop-slot
-      - psql {{.PG_DSN}} -c "TRUNCATE public.users, public.products, public.cart;"
-      - task psql:data:users
       - |
         {{if .CORES}}GOMAXPROCS={{.CORES}} {{end}}go run ../../../../cmd/redpanda-connect/main.go run \
           --set input.postgres_cdc.batching.count={{.BATCH}} \
