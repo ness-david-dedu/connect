@@ -2,7 +2,7 @@
   "name": "iceberg-sink-bench",
   "config": {
     "connector.class": "io.tabular.iceberg.connect.IcebergSinkConnector",
-    "tasks.max": "4",
+    "tasks.max": "2",
     "topics": "bench-events",
 
     "iceberg.catalog.type": "rest",
@@ -19,10 +19,14 @@
     "iceberg.tables.auto-create-enabled": "true",
 
     "iceberg.control.commit.interval-ms": "10000",
+    "iceberg.control.commit.timeout-ms": "30000",
 
     "consumer.override.max.partition.fetch.bytes": "1048576",
     "consumer.override.session.timeout.ms": "300000",
     "consumer.override.max.poll.interval.ms": "300000",
+
+    "iceberg.kafka.session.timeout.ms": "300000",
+    "iceberg.kafka.max.poll.interval.ms": "300000",
 
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
     "value.converter.schemas.enable": "false"

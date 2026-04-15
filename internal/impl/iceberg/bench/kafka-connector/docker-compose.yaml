@@ -134,7 +134,7 @@ services:
         kafka-topics --bootstrap-server kafka:29092 \
           --create --if-not-exists \
           --topic bench-events \
-          --partitions 12 \
+          --partitions 2 \
           --replication-factor 1
         kafka-topics --bootstrap-server kafka:29092 \
           --create --if-not-exists \
@@ -148,3 +148,21 @@ services:
           -H "Content-Type: application/json" \
           -d '{"namespace": ["benchmark"]}' || true
         echo "namespace ready"
+        # Pre-create the benchmark.events table so the connector never hits a
+        # NoSuchTableException 404 (which the rest-fixture logs noisily as ERROR).
+        curl -sf -X POST http://iceberg-rest:8181/v1/namespaces/benchmark/tables \
+          -H "Content-Type: application/json" \
+          -d '{
+            "name": "events",
+            "schema": {
+              "type": "struct",
+              "schema-id": 0,
+              "fields": [
+                {"id": 1, "name": "id",       "required": false, "type": "long"},
+                {"id": 2, "name": "category", "required": false, "type": "string"},
+                {"id": 3, "name": "value",    "required": false, "type": "double"},
+                {"id": 4, "name": "ts",       "required": false, "type": "long"}
+              ]
+            }
+          }' || true
+        echo "table ready"

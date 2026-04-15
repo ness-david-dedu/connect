@@ -177,30 +177,42 @@ tasks:
           --replication-factor 1 \
           --config cleanup.policy=compact
 
+  bench-topic:recreate:
+    desc: Delete and recreate bench-events topic for a clean slate
+    cmds:
+      - docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic bench-events 2>/dev/null || true
+      - |
+        until ! docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+            --list 2>/dev/null | grep -q '^bench-events$'; do
+          sleep 1
+        done
+      - |
+        docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+          --create --topic bench-events \
+          --partitions 2 \
+          --replication-factor 1
+
   bench:run:
-    desc: "Full benchmark: pause connector, load COUNT events, resume and measure (e.g. task bench:run COUNT=1000000)"
+    desc: "Full benchmark: load COUNT events and measure Iceberg sink throughput (e.g. task bench:run COUNT=1000000)"
     vars:
       COUNT: '{{.COUNT | default "1000000"}}'
     cmds:
-      - echo "==> Deleting connector and waiting for consumer group to go inactive..."
+      - echo "==> Resetting state..."
       - task connector:delete
       - |
-        # Wait until the consumer group has no active members before resetting offsets.
-        # Kafka rejects --reset-offsets on an active group; || true in reset-offsets swallows the error silently.
         until [ "$(docker exec kc-kafka kafka-consumer-groups \
             --bootstrap-server localhost:29092 \
             --describe --group connect-iceberg-sink-bench 2>/dev/null \
             | grep -c STABLE || true)" -eq 0 ]; do
-          echo "  waiting for group to go inactive..."
           sleep 2
         done
-      - task topic:reset-offsets
-      - echo "==> Resetting control topic to clear stale coordinator state..."
+      - task bench-topic:recreate
       - task control-topic:reset
-      - echo "==> Loading {{.COUNT}} events into bench-events..."
+      - echo "==> Pre-loading {{.COUNT}} events into bench-events..."
       - task data:load COUNT={{.COUNT}}
-      - echo "==> Registering connector and measuring throughput..."
+      - echo "==> Starting connector..."
       - task connector:create
+      - echo "==> Measuring throughput..."
       - task bench:measure TOTAL={{.COUNT}}
 
   logs:connect:
