@@ -1,0 +1,96 @@
+version: "3"
+
+vars:
+  MINIO_USER: '{{.MINIO_USER | default "admin"}}'
+  MINIO_PASSWORD: '{{.MINIO_PASSWORD | default "password"}}'
+  MINIO_REGION: '{{.MINIO_REGION | default "us-east-1"}}'
+  CATALOG_URL: '{{.CATALOG_URL | default "http://localhost:8181"}}'
+  MINIO_ENDPOINT: '{{.MINIO_ENDPOINT | default "http://localhost:9000"}}'
+  MINIO_BUCKET: '{{.MINIO_BUCKET | default "warehouse"}}'
+
+tasks:
+  infra:up:
+    desc: Start MinIO and Iceberg REST catalog
+    cmds:
+      - docker compose -f docker-compose.yaml up -d
+      - until curl -sf http://localhost:9000/minio/health/live > /dev/null; do sleep 1; done
+      - until curl -sf http://localhost:8181/v1/config > /dev/null; do sleep 1; done
+
+  infra:down:
+    desc: Stop and remove all containers and volumes
+    cmds:
+      - docker compose -f docker-compose.yaml down -v
+
+  infra:logs:
+    desc: Show container logs
+    cmds:
+      - docker compose -f docker-compose.yaml logs -f
+
+  infra:reset:
+    desc: Wipe all data and restart infrastructure
+    cmds:
+      - docker compose -f docker-compose.yaml down -v
+      - docker compose -f docker-compose.yaml up -d
+      - until curl -sf http://localhost:9000/minio/health/live > /dev/null; do sleep 1; done
+      - until curl -sf http://localhost:8181/v1/config > /dev/null; do sleep 1; done
+
+  # Parameterised benchmark — specify CORES, BATCH and COUNT freely
+  # Usage: task bench CORES=4 BATCH=5000 COUNT=1000000
+  bench:
+    desc: "Run write benchmark (e.g. task bench CORES=4 BATCH=5000 COUNT=1000000)"
+    vars:
+      CORES: '{{.CORES | default ""}}'
+      BATCH: '{{.BATCH | default "1000"}}'
+      COUNT: '{{.COUNT | default "0"}}'
+    cmds:
+      - |
+        AWS_EC2_METADATA_DISABLED=true \
+        AWS_ACCESS_KEY_ID={{.MINIO_USER}} \
+        AWS_SECRET_ACCESS_KEY={{.MINIO_PASSWORD}} \
+        AWS_REGION={{.MINIO_REGION}} \
+        GOMAXPROCS={{.CORES}} go run ../../../../cmd/redpanda-connect/main.go run \
+          --set input.generate.count={{.COUNT}} \
+          --set output.iceberg.batching.count={{.BATCH}} \
+          --set output.iceberg.batching.period=5s \
+          --set output.iceberg.catalog.url={{.CATALOG_URL}} \
+          --set output.iceberg.storage.aws_s3.endpoint={{.MINIO_ENDPOINT}} \
+          --set output.iceberg.storage.aws_s3.bucket={{.MINIO_BUCKET}} \
+          --set output.iceberg.storage.aws_s3.credentials.id={{.MINIO_USER}} \
+          --set output.iceberg.storage.aws_s3.credentials.secret={{.MINIO_PASSWORD}} \
+          ./benchmark_config.yaml
+
+  # Usage: task bench:mif BATCH=10000 MIF=8 CORES=4 COUNT=1000000
+  bench:mif:
+    desc: "Run benchmark with varying BATCH, max_in_flight, CORES and COUNT (e.g. task bench:mif BATCH=10000 MIF=8 CORES=4 COUNT=1000000)"
+    vars:
+      BATCH: '{{.BATCH | default "1000"}}'
+      MIF: '{{.MIF | default "4"}}'
+      CORES: '{{.CORES | default "4"}}'
+      COUNT: '{{.COUNT | default "1000000"}}'
+    cmds:
+      - |
+        AWS_EC2_METADATA_DISABLED=true \
+        AWS_ACCESS_KEY_ID={{.MINIO_USER}} \
+        AWS_SECRET_ACCESS_KEY={{.MINIO_PASSWORD}} \
+        AWS_REGION={{.MINIO_REGION}} \
+        GOMAXPROCS={{.CORES}} go run ../../../../cmd/redpanda-connect/main.go run \
+          --set input.generate.count={{.COUNT}} \
+          --set output.iceberg.batching.count={{.BATCH}} \
+          --set output.iceberg.batching.period=5s \
+          --set output.iceberg.max_in_flight={{.MIF}} \
+          --set output.iceberg.catalog.url={{.CATALOG_URL}} \
+          --set output.iceberg.storage.aws_s3.endpoint={{.MINIO_ENDPOINT}} \
+          --set output.iceberg.storage.aws_s3.bucket={{.MINIO_BUCKET}} \
+          --set output.iceberg.storage.aws_s3.credentials.id={{.MINIO_USER}} \
+          --set output.iceberg.storage.aws_s3.credentials.secret={{.MINIO_PASSWORD}} \
+          ./benchmark_config.yaml
+
+  bench:reset:
+    desc: Wipe all data, restart infrastructure, then run benchmark
+    vars:
+      CORES: '{{.CORES | default ""}}'
+      BATCH: '{{.BATCH | default "1000"}}'
+      COUNT: '{{.COUNT | default "0"}}'
+    cmds:
+      - task infra:reset
+      - task bench CORES={{.CORES}} BATCH={{.BATCH}} COUNT={{.COUNT}}
