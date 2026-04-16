@@ -2,8 +2,8 @@
   "name": "iceberg-sink-bench",
   "config": {
     "connector.class": "io.tabular.iceberg.connect.IcebergSinkConnector",
-    "tasks.max": "2",
-    "topics": "bench-events",
+    "tasks.max": "16",
+    "topics": "bench-events-transformed",
 
     "iceberg.catalog.type": "rest",
     "iceberg.catalog.uri": "http://iceberg-rest:8181",

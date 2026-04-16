@@ -85,32 +85,30 @@ Fixed at `GOMAXPROCS=4`, varying `batching.count` and `max_in_flight` to measure
 
 ## Comparison: Kafka Connect vs Redpanda Connect Iceberg
 
-**Environment:** Intel Core i7-10850H @ 2.70GHz, 32 GB RAM, WSL2 (Linux 6.6.87.2), x86_64, MinIO + REST catalog running in Docker (localhost)
+**Environment:** Intel Core i7-10850H @ 2.70GHz, 32 GB RAM, WSL2 (Linux 6.6.87.2), x86_64
+**Dataset:** 10,000,000 synthetic events, MinIO + Iceberg REST catalog in Docker
 
-**Dataset:** Synthetic events, 10,000,000 messages per run
+Both connectors use a 10s commit window and 16 Kafka partitions. The transformation computes 5 derived fields per message (`event_id`, `value_usd`, `value_tier`, `ts_ms`, `is_high_value`).
 
-### Kafka Connect (Tabular Iceberg Sink)
+### Results
 
-| Tasks | Commit interval | Messages | Elapsed | Throughput |
-|-------|----------------|----------|---------|------------|
-| 2     | 10s            | 10,000,000 | 118s  | 84,745 msg/s |
+#### Sink only
 
-Config: `tasks.max=2`, `iceberg.control.commit.interval-ms=10000`
+| Connector                | Throughput    |
+|--------------------------|---------------|
+| Kafka Connect (Tabular)  | 84,745 msg/s  |
+| Redpanda Connect         | 61,349 msg/s  |
 
-### Redpanda Connect Iceberg Output (end-to-end, Kafka → Iceberg)
+#### Transform + sink
 
-| GOMAXPROCS | batch | period | max_in_flight | partitions | Messages | Elapsed | Throughput |
-|------------|-------|--------|---------------|------------|----------|---------|------------|
-| 4          | 0     | 10s    | 32            | 2          | 10,000,000 | 205s | 48,780 msg/s |
-| 6          | 0     | 10s    | 64            | 16         | 10,000,000 | 163s | 61,349 msg/s |
+| Connector                | Throughput    |
+|--------------------------|---------------|
+| Kafka Connect (Tabular)  | 37,037 msg/s  |
+| Redpanda Connect         | 47,272 msg/s  |
 
-Config: `checkpoint_limit=1000000`, time-only batching (`period=10s`, `count=0`) to match Kafka Connect commit cadence.
+### Notes
 
-### Summary
-
-| Connector | Config | Messages | Elapsed | Throughput |
-|-----------|--------|----------|---------|------------|
-| Kafka Connect (Tabular) | 16 tasks, 16 partitions, 10s commit | 10,000,000 | 118s | 84,745 msg/s |
-| Redpanda Connect Iceberg | GOMAXPROCS=6, MIF=64, 16 partitions, 10s period | 10,000,000 | 163s | 61,349 msg/s |
-
-Kafka Connect achieves ~1.4x higher throughput in this setup. Both connectors use the same infrastructure (Kafka, MinIO, Iceberg REST catalog) and equivalent 10s commit windows.
+- **Kafka Connect sink-only** is fastest in isolation — 16 tasks consuming pre-transformed data directly into Iceberg.
+- **Kafka Connect with transformation** requires a separate RPCN pre-processing step that writes to an intermediate Kafka topic (`bench-events-transformed`), then Kafka Connect reads from that topic and sinks to Iceberg. The two-stage I/O cuts throughput by more than half.
+- **Redpanda Connect** handles transformation and Iceberg writes in a single pipeline — no intermediate topic, no extra Kafka round-trip.
+- **End-to-end (the realistic scenario):** Redpanda Connect is ~1.3x faster than Kafka Connect (47k vs 37k msg/s).

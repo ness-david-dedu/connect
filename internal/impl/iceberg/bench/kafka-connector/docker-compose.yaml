@@ -134,7 +134,12 @@ services:
         kafka-topics --bootstrap-server kafka:29092 \
           --create --if-not-exists \
           --topic bench-events \
-          --partitions 2 \
+          --partitions 16 \
+          --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 \
+          --create --if-not-exists \
+          --topic bench-events-transformed \
+          --partitions 16 \
           --replication-factor 1
         kafka-topics --bootstrap-server kafka:29092 \
           --create --if-not-exists \

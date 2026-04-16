@@ -1,0 +1,35 @@
+# Transformation pipeline: reads from bench-events, transforms, writes to bench-events-transformed.
+# Used to simulate the extra processing stage required by Kafka Connect.
+
+input:
+  kafka:
+    addresses: ["${KAFKA_BOOTSTRAP:localhost:9092}"]
+    topics: ["bench-events"]
+    consumer_group: "rpcn-transform"
+    start_from_oldest: true
+    checkpoint_limit: 1000000
+
+pipeline:
+  processors:
+    - mapping: |
+        root.event_id      = this.id.string() + "-" + this.category
+        root.category      = this.category
+        root.value         = this.value
+        root.value_usd     = this.value / 100.0
+        root.value_tier    = if this.value < 1000.0 { "low" } else if this.value < 5000.0 { "mid" } else { "high" }
+        root.ts            = this.ts
+        root.ts_ms         = (this.ts / 1000).floor()
+        root.is_high_value = this.value > 8000.0
+
+output:
+  kafka_franz:
+    seed_brokers:
+      - "${KAFKA_BOOTSTRAP:localhost:9092}"
+    topic: bench-events-transformed
+    compression: snappy
+    batching:
+      count: 5000
+      period: 5s
+
+logger:
+  level: INFO

@@ -85,6 +85,114 @@ tasks:
           --set output.iceberg.storage.aws_s3.credentials.secret={{.MINIO_PASSWORD}} \
           ./benchmark_config.yaml
 
+  bench:lag:
+    desc: Show current consumer lag for the Redpanda Connect Iceberg sink group
+    cmds:
+      - docker exec kc-kafka kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group rpcn-iceberg-bench
+
+  # End-to-end benchmark using kafka-connector infrastructure (Kafka + MinIO + Iceberg REST).
+  # Prerequisites: run `task up` from the kafka-connector/ folder first.
+  #
+  # Usage:
+  #   task bench:run COUNT=10000000
+  #   task bench:run COUNT=10000000 BATCH=10000 MIF=32 CORES=4 INTERVAL=10
+  bench:run:
+    desc: "End-to-end benchmark: load COUNT events to Kafka then drain via Redpanda Connect Iceberg (e.g. task bench:run COUNT=10000000)"
+    vars:
+      COUNT: '{{.COUNT | default "1000000"}}'
+      BATCH: '{{.BATCH | default "0"}}'
+      MIF: '{{.MIF | default "32"}}'
+      CORES: '{{.CORES | default "4"}}'
+      INTERVAL: '{{.INTERVAL | default "1"}}'
+      CHECKPOINT: '{{.CHECKPOINT | default "1000000"}}'
+      PERIOD: '{{.PERIOD | default "10s"}}'
+      # Override these if kafka-connector infra is on different ports
+      KC_CATALOG_URL: '{{.KC_CATALOG_URL | default "http://localhost:18181"}}'
+      KC_MINIO_ENDPOINT: '{{.KC_MINIO_ENDPOINT | default "http://localhost:19000"}}'
+    cmds:
+      - echo "==> Loading {{.COUNT}} events to Kafka..."
+      - (cd kafka-connector && task data:load COUNT={{.COUNT}})
+      - echo "==> Starting Redpanda Connect Iceberg sink..."
+      - |
+        GROUP=rpcn-iceberg-bench
+        INTERVAL={{.INTERVAL}}
+
+        AWS_EC2_METADATA_DISABLED=true \
+        AWS_ACCESS_KEY_ID={{.MINIO_USER}} \
+        AWS_SECRET_ACCESS_KEY={{.MINIO_PASSWORD}} \
+        AWS_REGION={{.MINIO_REGION}} \
+        GOMAXPROCS={{.CORES}} go run ../../../../cmd/redpanda-connect/main.go run \
+          --set input.kafka.checkpoint_limit={{.CHECKPOINT}} \
+          --set output.iceberg.batching.count={{.BATCH}} \
+          --set output.iceberg.batching.period={{.PERIOD}} \
+          --set output.iceberg.max_in_flight={{.MIF}} \
+          --set output.iceberg.catalog.url={{.KC_CATALOG_URL}} \
+          --set output.iceberg.storage.aws_s3.endpoint={{.KC_MINIO_ENDPOINT}} \
+          --set output.iceberg.storage.aws_s3.bucket={{.MINIO_BUCKET}} \
+          --set output.iceberg.storage.aws_s3.credentials.id={{.MINIO_USER}} \
+          --set output.iceberg.storage.aws_s3.credentials.secret={{.MINIO_PASSWORD}} \
+          ./kafka_benchmark_config.yaml &
+        RPCN_PID=$!
+        get_lag() {
+          docker exec kc-kafka kafka-consumer-groups \
+            --bootstrap-server localhost:29092 \
+            --describe --group "$GROUP" 2>/dev/null \
+            | awk '/bench-events/ {
+                cur = ($4 == "-") ? 0 : $4
+                sum += $5 - cur
+              } END {print (NR == 0 ? -1 : sum)}'
+        }
+
+        START=""
+        INITIAL_LAG=""
+        PREV_LAG=""
+        PREV_TIME=""
+
+        printf "%-10s  %-14s  %s\n" "TIME" "LAG" "MSG/S"
+
+        while true; do
+          sleep "$INTERVAL"
+          LAG=$(get_lag)
+          NOW=$(date +%s)
+
+          if [ -z "$START" ]; then
+            if [ "$LAG" -gt 0 ] 2>/dev/null; then
+              START=$NOW
+              INITIAL_LAG=$LAG
+              PREV_LAG=$LAG
+              PREV_TIME=$NOW
+              printf "%-10s  %-14s  (timing started)\n" "$(date +%H:%M:%S)" "$LAG"
+            else
+              printf "%-10s  %-14s  (waiting for lag...)\n" "$(date +%H:%M:%S)" "$LAG"
+            fi
+            continue
+          fi
+
+          DELTA_T=$((NOW - PREV_TIME))
+          DELTA_LAG=$((PREV_LAG - LAG))
+          if [ "$DELTA_T" -gt 0 ]; then
+            RATE=$((DELTA_LAG / DELTA_T))
+          else
+            RATE=0
+          fi
+
+          printf "%-10s  %-14s  %s msg/s\n" "$(date +%H:%M:%S)" "$LAG" "$RATE"
+
+          if [ "$LAG" -eq 0 ]; then
+            ELAPSED=$((NOW - START))
+            AVG=$(( INITIAL_LAG / (ELAPSED > 0 ? ELAPSED : 1) ))
+            echo "---"
+            echo "Total messages : $INITIAL_LAG"
+            echo "Elapsed        : ${ELAPSED}s"
+            echo "Avg throughput : ${AVG} msg/s"
+            kill $RPCN_PID 2>/dev/null || true
+            break
+          fi
+
+          PREV_LAG=$LAG
+          PREV_TIME=$NOW
+        done
+
   bench:reset:
     desc: Wipe all data, restart infrastructure, then run benchmark
     vars:
