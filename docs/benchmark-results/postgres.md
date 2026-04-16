@@ -68,3 +68,27 @@ Full snapshot of the `public.users` table: 150,000 rows, ~625 KB per row. Varyin
 | 8           |        752 |        N/A |         N/A |
 
 **Observations:** Throughput plateaus at 2 cores (1,166 msg/sec, 766 MB/sec) and is completely flat from 4→8 cores. This confirms the users dataset is I/O bound — additional cores provide no benefit. Testing further batch sizes is unlikely to change this conclusion. Contrast with cart where throughput scaled to 318K msg/sec at 8 cores.
+
+---
+
+## Kafka → PostgreSQL: Kafka Connect (JDBC Sink) vs Redpanda Connect
+
+Comparison of throughput writing from Kafka into PostgreSQL. Both connectors read from the same 16-partition `bench-events` topic and write to a `bench_events` table.
+
+**Environment:** Intel Core i7-10850H @ 2.70GHz, 32 GB RAM, WSL2 (Linux 6.6.87.2), x86_64, Kafka + PostgreSQL 16 running in Docker (localhost)
+
+**Dataset:** 10,000,000 rows × ~200 B (synthetic events: id, category, value, ts)
+
+See [`internal/impl/postgresql/bench/kafka-connector/`](../../internal/impl/postgresql/bench/kafka-connector/) for the Kafka Connect benchmark config and run instructions.
+
+### Results
+
+| Connector | Tasks / Workers | Total Messages | Elapsed | Avg Throughput |
+|---|---|---|---|---|
+| Kafka Connect (JDBC Sink) | 16 tasks | 10,000,000 | 55s | 181,818 msg/s |
+| Redpanda Connect | — | — | — | — |
+
+### Notes
+
+- **Kafka Connect** used `confluentinc/kafka-connect-jdbc:10.7.14` with 16 sink tasks, batch size 3,000, `insert` mode, and JSON converter with embedded schema envelope (no Schema Registry).
+- Redpanda Connect results pending.
