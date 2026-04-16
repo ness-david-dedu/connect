@@ -3,7 +3,7 @@ version: "3"
 vars:
   KAFKA_BOOTSTRAP: '{{.KAFKA_BOOTSTRAP | default "localhost:9092"}}'
   CONNECT_URL: '{{.CONNECT_URL | default "http://localhost:8083"}}'
-  ICEBERG_REST_URL: '{{.ICEBERG_REST_URL | default "http://localhost:8181"}}'
+  ICEBERG_REST_URL: '{{.ICEBERG_REST_URL | default "http://localhost:18181"}}'
 
 tasks:
   up:
@@ -90,7 +90,7 @@ tasks:
     desc: "Poll lag and print msg/s until topic is drained (e.g. task bench:measure TOTAL=1000000)"
     vars:
       TOTAL: '{{.TOTAL | default "1000000"}}'
-      INTERVAL: '{{.INTERVAL | default "15"}}'
+      INTERVAL: '{{.INTERVAL | default "1"}}'
     cmds:
       - |
         GROUP=connect-iceberg-sink-bench
@@ -214,6 +214,47 @@ tasks:
       - task connector:create
       - echo "==> Measuring throughput..."
       - task bench:measure TOTAL={{.COUNT}}
+
+  data:reset:
+    desc: Drop and recreate the benchmark.events Iceberg table (clears all data)
+    cmds:
+      - task connector:delete
+      - task control-topic:reset
+      - curl -sf -X DELETE {{.ICEBERG_REST_URL}}/v1/namespaces/benchmark/tables/events || true
+      - |
+        curl -sf -X POST {{.ICEBERG_REST_URL}}/v1/namespaces/benchmark/tables \
+          -H "Content-Type: application/json" \
+          -d '{
+            "name": "events",
+            "schema": {
+              "type": "struct",
+              "schema-id": 0,
+              "fields": [
+                {"id": 1, "name": "id",       "required": false, "type": "long"},
+                {"id": 2, "name": "category", "required": false, "type": "string"},
+                {"id": 3, "name": "value",    "required": false, "type": "double"},
+                {"id": 4, "name": "ts",       "required": false, "type": "long"}
+              ]
+            }
+          }' | jq .name
+
+  data:stats:
+    desc: Show Iceberg table snapshot stats (row count, file size)
+    cmds:
+      - |
+        curl -s {{.ICEBERG_REST_URL}}/v1/namespaces/benchmark/tables/events \
+          | jq '
+            if .metadata.snapshots == null or (.metadata.snapshots | length) == 0
+            then "no snapshots yet"
+            else {
+              snapshots:     (.metadata.snapshots | length),
+              metadata_logs: (.metadata["metadata-log"] | length),
+              total_records: .metadata.snapshots[-1].summary["total-records"],
+              total_size:    .metadata.snapshots[-1].summary["total-files-size"],
+              added_records: .metadata.snapshots[-1].summary["added-records"],
+              added_size:    .metadata.snapshots[-1].summary["added-files-size"]
+            }
+            end'
 
   logs:connect:
     desc: Follow Kafka Connect worker logs
