@@ -80,3 +80,37 @@ Fixed at `GOMAXPROCS=4`, varying `batching.count` and `max_in_flight` to measure
 - **batch=5000 and batch=10000 converge at high MIF values** — both plateau at ~34K msg/sec when given enough concurrent commits. batch=10000 reaches the ceiling with fewer in-flight requests (MIF=32 vs MIF=64).
 - **Sweet spot: batch=10000, MIF=32** — reaches maximum throughput with the least concurrency overhead.
 - The fundamental insight from both sections: the Iceberg write bottleneck is catalog commit latency. The connector itself is not the bottleneck — throw more concurrent commits at it (`max_in_flight`) and it scales linearly until MinIO saturates.
+
+---
+
+## Comparison: Kafka Connect vs Redpanda Connect Iceberg
+
+**Environment:** Intel Core i7-10850H @ 2.70GHz, 32 GB RAM, WSL2 (Linux 6.6.87.2), x86_64, MinIO + REST catalog running in Docker (localhost)
+
+**Dataset:** Synthetic events, 10,000,000 messages per run
+
+### Kafka Connect (Tabular Iceberg Sink)
+
+| Tasks | Commit interval | Messages | Elapsed | Throughput |
+|-------|----------------|----------|---------|------------|
+| 2     | 10s            | 10,000,000 | 118s  | 84,745 msg/s |
+
+Config: `tasks.max=2`, `iceberg.control.commit.interval-ms=10000`
+
+### Redpanda Connect Iceberg Output (end-to-end, Kafka → Iceberg)
+
+| GOMAXPROCS | batch | period | max_in_flight | partitions | Messages | Elapsed | Throughput |
+|------------|-------|--------|---------------|------------|----------|---------|------------|
+| 4          | 0     | 10s    | 32            | 2          | 10,000,000 | 205s | 48,780 msg/s |
+| 6          | 0     | 10s    | 64            | 16         | 10,000,000 | 163s | 61,349 msg/s |
+
+Config: `checkpoint_limit=1000000`, time-only batching (`period=10s`, `count=0`) to match Kafka Connect commit cadence.
+
+### Summary
+
+| Connector | Config | Messages | Elapsed | Throughput |
+|-----------|--------|----------|---------|------------|
+| Kafka Connect (Tabular) | 16 tasks, 16 partitions, 10s commit | 10,000,000 | 118s | 84,745 msg/s |
+| Redpanda Connect Iceberg | GOMAXPROCS=6, MIF=64, 16 partitions, 10s period | 10,000,000 | 163s | 61,349 msg/s |
+
+Kafka Connect achieves ~1.4x higher throughput in this setup. Both connectors use the same infrastructure (Kafka, MinIO, Iceberg REST catalog) and equivalent 10s commit windows.
