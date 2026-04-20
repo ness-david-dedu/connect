@@ -72,25 +72,25 @@ See [`internal/impl/postgresql/bench/kafka-connector/`](../../internal/impl/post
 
 ### Comparison (best configuration per connector)
 
-| Connector | Configuration | Elapsed | Throughput |
-|---|---|---|---|
-| Kafka Connect (JDBC Sink) | 16 tasks, batch=3000 | 55s | **181,818 msg/s** |
-| Redpanda Connect | mif=64 | 70s | **130,952 msg/s** |
+| Connector                 | Configuration        | Elapsed | Throughput     |
+|---------------------------|----------------------|---------|----------------|
+| Kafka Connect (JDBC Sink) | 16 tasks, batch=3000 |     55s | 181,818 msg/s  |
+| Redpanda Connect          | mif=64               |     70s | 130,952 msg/s  |
 
 Kafka Connect is **~1.39× faster** on this workload. Its JDBC sink tasks amortise PostgreSQL round-trips more aggressively than RPCN's `sql_insert` output bounded by `max_in_flight`.
 
 ### Redpanda Connect tuning runs
 
-| max_in_flight | GOMAXPROCS | Kafka CPUs | Elapsed | Throughput |
-|---|---|---|---|---|
-| 16  | default | uncapped | 88s  | 103,825 msg/s |
-| 64  | default | uncapped | 70s  | **130,952 msg/s** |
-| 128 | default | uncapped | 96s  | 104,166 msg/s |
-| 128 | 4       | uncapped | 96s  | 104,166 msg/s |
-| 128 | 8       | uncapped | 145s |  68,965 msg/s |
-| 128 | 4       | 1 CPU    | 121s |  70,300 msg/s |
-| 64  | default | 2 CPU    | 89s  | 112,359 msg/s |
-| 64  | default | 3 CPU    | 101s |  99,009 msg/s |
+| max_in_flight | GOMAXPROCS | Kafka CPUs | Elapsed | Throughput     |
+|---------------|------------|------------|---------|----------------|
+| 16            | uncapped   | uncapped   |     88s | 103,825 msg/s  |
+| 64            | uncapped   | uncapped   |     70s | 130,952 msg/s  |
+| 128           | uncapped   | uncapped   |     96s | 104,166 msg/s  |
+| 128           | 4          | uncapped   |     96s | 104,166 msg/s  |
+| 128           | 8          | uncapped   |    145s |  68,965 msg/s  |
+| 128           | 4          | 1          |    121s |  70,300 msg/s  |
+| 64            | uncapped   | 2          |     89s | 112,359 msg/s  |
+| 64            | uncapped   | 3          |    101s |  99,009 msg/s  |
 
 **Observations:**
 - **Sweet spot: `mif=64`, uncapped Kafka** — 130,952 msg/s.
