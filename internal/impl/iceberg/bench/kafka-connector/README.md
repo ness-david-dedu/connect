@@ -1,14 +1,22 @@
 # Kafka → Iceberg Benchmark (Kafka Connect vs Redpanda Connect)
 
-End-to-end benchmark comparing **Kafka Connect (Tabular Iceberg Sink)** against **Redpanda Connect** writing from Kafka to Iceberg. Both connectors apply the same field transformation and use the same infrastructure.
+End-to-end benchmark comparing **Kafka Connect (Tabular Iceberg Sink)** against **Redpanda Connect** writing from Kafka to Iceberg.
 
 See [`docs/benchmark-results/iceberg.md`](../../../../../docs/benchmark-results/iceberg.md) for results.
+
+## Architecture
+
+```
+producer → bench-events → RPCN transformer → bench-events-transformed → Kafka Connect Iceberg Sink → Iceberg
+```
+
+The RPCN transformer step is required because the Tabular Iceberg sink connector cannot apply field transformations natively. Redpanda Connect handles the same pipeline in a single process with no intermediate topic.
 
 ## Prerequisites
 
 - Docker with Compose
 - Go toolchain
-- [`task`](https://taskfile.dev) CLI
+- `task` CLI
 - `jq`
 
 ## Infrastructure
@@ -19,51 +27,40 @@ task down   # stop and remove all containers and volumes
 ```
 
 | Service | URL |
-|---------|-----|
+|---|---|
 | Kafka | localhost:9092 |
 | Kafka Connect | http://localhost:8083 |
 | Iceberg REST catalog | http://localhost:18181 |
 | MinIO console | http://localhost:19001 (admin/password) |
 
-## Kafka Connect Benchmark
-
-Full end-to-end run: produce → transform → sink into Iceberg.
+## Quickstart
 
 ```bash
+task up
 task bench:run COUNT=10000000
 ```
 
-This will:
-1. Delete the existing connector and reset offsets
-2. Produce `COUNT` events to `bench-events`
-3. Run RPCN to transform `bench-events` → `bench-events-transformed`
-4. Register the Kafka Connect Iceberg sink and measure throughput
+## Tasks Reference
 
-### Individual steps
-
-```bash
-task data:load COUNT=1000000        # produce events to bench-events
-task bench:transform                # transform bench-events → bench-events-transformed
-task bench:sink                     # register connector and measure throughput
-```
-
-### Monitoring
-
-```bash
-task bench:lag                      # show current consumer lag
-task bench:offsets                  # show end offsets for both topics
-task connector:status               # show connector and task status
-task logs:connect                   # follow Kafka Connect worker logs
-```
-
-### Data management
-
-```bash
-task data:stats                     # show Iceberg table snapshot stats
-task data:reset                     # drop and recreate the Iceberg table
-task bench-topic:recreate           # delete and recreate bench-events topic
-task control-topic:reset            # reset the Iceberg control topic
-```
+| Task | Description |
+|---|---|
+| `task up` | Start all containers, wait for Connect readiness |
+| `task down` | Stop and remove all containers and volumes |
+| `task bench:run COUNT=N` | Full benchmark: produce → transform → sink |
+| `task bench:transform` | Phase 1: transform bench-events → bench-events-transformed |
+| `task bench:sink` | Phase 2: register connector and measure sink throughput |
+| `task bench:measure TOTAL=N INTERVAL=S` | Poll lag and print msg/s until drained |
+| `task bench:lag` | Show current consumer group lag |
+| `task bench:offsets` | Show end offsets for both topics |
+| `task connector:create` | Register the Iceberg sink connector |
+| `task connector:status` | Show connector and task status |
+| `task connector:delete` | Delete the connector (keeps infrastructure running) |
+| `task data:load COUNT=N` | Produce N events to bench-events |
+| `task data:reset` | Drop and recreate the Iceberg benchmark.events table |
+| `task data:stats` | Show Iceberg table snapshot stats |
+| `task control-topic:reset` | Reset the Iceberg control topic |
+| `task bench-topic:recreate` | Delete and recreate bench-events topic |
+| `task logs:connect` | Follow Kafka Connect worker logs |
 
 ## Redpanda Connect Benchmark
 
@@ -74,4 +71,4 @@ cd ..
 task bench:run COUNT=10000000
 ```
 
-This runs a single pipeline: Kafka → transform → Iceberg, with no intermediate topic.
+Single pipeline — no intermediate topic, no separate transform step.

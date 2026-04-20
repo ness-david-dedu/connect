@@ -7,6 +7,10 @@ vars:
   PG_USER: '{{.PG_USER | default "postgres"}}'
   PG_PASSWORD: '{{.PG_PASSWORD | default "postgres"}}'
   PG_DB: '{{.PG_DB | default "testdb"}}'
+  KAFKA_BOOTSTRAP: '{{.KAFKA_BOOTSTRAP | default "localhost:9092"}}'
+  # Separate DSN for the Kafka→PostgreSQL benchmarks — uses the benchdb database
+  # created by the kafka-connector docker-compose, not the CDC testdb.
+  KAFKA_PG_DSN: '{{.KAFKA_PG_DSN | default "postgres://postgres:postgres@localhost:5432/benchdb?sslmode=disable"}}'
 
 tasks:
   postgres:up:
@@ -179,4 +183,109 @@ tasks:
         {{if .CORES}}GOMAXPROCS={{.CORES}} {{end}}go run ../../../../cmd/redpanda-connect/main.go run \
           --set input.postgres_cdc.batching.count={{.BATCH}} \
           ./benchmark_config.yaml
+
+  # ── Kafka → PostgreSQL benchmarks (comparison with Kafka Connect JDBC Sink) ──
+
+  bench:kafka:
+    desc: "Run Redpanda Connect Kafka→PostgreSQL benchmark against existing topic data (e.g. task bench:kafka MAX_IN_FLIGHT=64 CORES=4)"
+    vars:
+      INTERVAL: '{{.INTERVAL | default "5"}}'
+      MAX_IN_FLIGHT: '{{.MAX_IN_FLIGHT | default "16"}}'
+      THREADS: '{{.THREADS | default "1"}}'
+      CORES: '{{.CORES | default ""}}'
+    cmds:
+      - |
+        set -e
+        GROUP=rpcn-pg-sink-bench
+
+        pkill -f kafka_benchmark_config.yaml 2>/dev/null || true
+        sleep 1
+        psql {{.KAFKA_PG_DSN}} -c "TRUNCATE bench_events;"
+
+        {{if .CORES}}GOMAXPROCS={{.CORES}} {{end}}PG_DSN={{.KAFKA_PG_DSN}} KAFKA_BOOTSTRAP={{.KAFKA_BOOTSTRAP}} \
+        go run ../../../../cmd/redpanda-connect/main.go run \
+          --set output.sql_insert.max_in_flight={{.MAX_IN_FLIGHT}} \
+          --set pipeline.threads={{.THREADS}} \
+          ./kafka_benchmark_config.yaml &
+        RPCN_PID=$!
+
+        cleanup() { pkill -f kafka_benchmark_config.yaml 2>/dev/null || true; }
+        trap cleanup EXIT
+
+        get_lag() {
+          docker exec pgkc-kafka kafka-consumer-groups \
+            --bootstrap-server localhost:29092 \
+            --describe --group "$GROUP" 2>/dev/null \
+            | awk '/bench-events/ {
+                cur = ($4 == "-") ? 0 : $4
+                sum += $5 - cur
+              } END {print (NR == 0 ? -1 : sum)}'
+        }
+
+        START=""
+        INITIAL_LAG=""
+        PREV_LAG=""
+        PREV_TIME=""
+        INTERVAL={{.INTERVAL}}
+
+        printf "%-10s  %-14s  %s\n" "TIME" "LAG" "MSG/S"
+
+        while true; do
+          sleep "$INTERVAL"
+          LAG=$(get_lag)
+          NOW=$(date +%s)
+
+          if [ -z "$START" ]; then
+            if [ "$LAG" -gt 0 ] 2>/dev/null; then
+              START=$NOW
+              INITIAL_LAG=$LAG
+              PREV_LAG=$LAG
+              PREV_TIME=$NOW
+              printf "%-10s  %-14s  (timing started)\n" "$(date +%H:%M:%S)" "$LAG"
+            else
+              printf "%-10s  %-14s  (waiting for lag...)\n" "$(date +%H:%M:%S)" "$LAG"
+            fi
+            continue
+          fi
+
+          [ "$LAG" -eq -1 ] 2>/dev/null && LAG=0
+
+          DELTA_T=$((NOW - PREV_TIME))
+          DELTA_LAG=$((PREV_LAG - LAG))
+          RATE=$(( DELTA_T > 0 ? DELTA_LAG / DELTA_T : 0 ))
+
+          printf "%-10s  %-14s  %s msg/s\n" "$(date +%H:%M:%S)" "$LAG" "$RATE"
+
+          if [ "$LAG" -eq 0 ]; then
+            ELAPSED=$((NOW - START))
+            AVG=$(( INITIAL_LAG / (ELAPSED > 0 ? ELAPSED : 1) ))
+            echo "---"
+            echo "Total messages : $INITIAL_LAG"
+            echo "Elapsed        : ${ELAPSED}s"
+            echo "Avg throughput : ${AVG} msg/s"
+            pkill -f kafka_benchmark_config.yaml 2>/dev/null || true
+            break
+          fi
+
+          PREV_LAG=$LAG
+          PREV_TIME=$NOW
+        done
+
+  bench:kafka:load:
+    desc: "Recreate topic and produce COUNT events (e.g. task bench:kafka:load COUNT=10000000)"
+    vars:
+      COUNT: '{{.COUNT | default "1000000"}}'
+    cmds:
+      - |
+        set -e
+        docker exec pgkc-kafka kafka-topics --bootstrap-server localhost:29092 \
+          --delete --topic bench-events 2>/dev/null || true
+        until ! docker exec pgkc-kafka kafka-topics --bootstrap-server localhost:29092 \
+            --list 2>/dev/null | grep -q '^bench-events$'; do sleep 1; done
+        docker exec pgkc-kafka kafka-topics --bootstrap-server localhost:29092 \
+          --create --topic bench-events --partitions 16 --replication-factor 1
+        echo "topic recreated"
+        COUNT={{.COUNT}} KAFKA_BOOTSTRAP={{.KAFKA_BOOTSTRAP}} \
+        go run ../../../../cmd/redpanda-connect/main.go run ./kafka-connector/producer.yaml
+        echo "produced {{.COUNT}} messages"
 

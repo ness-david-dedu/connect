@@ -40,16 +40,6 @@ tasks:
     cmds:
       - curl -s -X DELETE {{.CONNECT_URL}}/connectors/{{.CONNECTOR_NAME}} || true
 
-  connector:pause:
-    desc: Pause the connector (stop consuming without deleting offsets)
-    cmds:
-      - curl -sf -X PUT {{.CONNECT_URL}}/connectors/{{.CONNECTOR_NAME}}/pause | jq .
-
-  connector:resume:
-    desc: Resume a paused connector
-    cmds:
-      - curl -sf -X PUT {{.CONNECT_URL}}/connectors/{{.CONNECTOR_NAME}}/resume | jq .
-
   data:load:
     desc: "Produce events to bench-events topic (e.g. task data:load COUNT=5000000)"
     vars:
@@ -59,16 +49,6 @@ tasks:
       KAFKA_BOOTSTRAP: '{{.KAFKA_BOOTSTRAP}}'
     cmds:
       - go run ../../../../../cmd/redpanda-connect/main.go run ./producer.yaml
-
-  topic:reset-offsets:
-    desc: Reset consumer group offsets to beginning of bench-events (reprocess all messages)
-    cmds:
-      - |
-        docker exec pgkc-kafka kafka-consumer-groups \
-          --bootstrap-server localhost:29092 \
-          --group {{.CONSUMER_GROUP}} \
-          --topic bench-events \
-          --reset-offsets --to-earliest --execute 2>/dev/null || true
 
   bench:lag:
     desc: Show current consumer lag for the JDBC sink connector group
@@ -85,19 +65,8 @@ tasks:
     cmds:
       - psql {{.PG_DSN}} -c "SELECT COUNT(*) AS rows_written FROM bench_events;"
 
-  # Measure throughput by polling consumer group lag until the topic is fully drained.
-  #
-  # Strategy: poll lag every INTERVAL seconds, print rolling msg/s (delta_lag/delta_time).
-  # When lag hits zero, print overall elapsed time and average throughput.
-  #
-  # NOTE: The JDBC sink commits Kafka offsets after each batch flush to PostgreSQL.
-  # Between commits, lag appears frozen. Keep INTERVAL >= 5s for stable readings.
-  #
-  # Usage:
-  #   task bench:measure TOTAL=1000000
-  #   task bench:measure TOTAL=5000000 INTERVAL=5
   bench:measure:
-    desc: "Poll lag and print msg/s until topic is drained (e.g. task bench:measure TOTAL=1000000)"
+    desc: "Poll lag and print msg/s until topic is drained (e.g. task bench:measure TOTAL=1000000 INTERVAL=5)"
     vars:
       TOTAL: '{{.TOTAL | default "1000000"}}'
       INTERVAL: '{{.INTERVAL | default "5"}}'
@@ -142,9 +111,6 @@ tasks:
             continue
           fi
 
-          # -1 means kafka-consumer-groups returned no rows for the topic —
-          # the connector committed all offsets and the group describe is empty.
-          # Treat as 0 (fully drained) once timing has started.
           [ "$LAG" -eq -1 ] 2>/dev/null && LAG=0
 
           DELTA_T=$((NOW - PREV_TIME))
@@ -171,13 +137,8 @@ tasks:
           PREV_TIME=$NOW
         done
 
-  # Full benchmark: load N events, reset connector, start measuring.
-  #
-  # Usage:
-  #   task bench:run COUNT=1000000
-  #   task bench:run COUNT=5000000
   bench:run:
-    desc: "Full benchmark: load COUNT events then measure JDBC sink throughput (e.g. task bench:run COUNT=1000000)"
+    desc: "Full benchmark: load COUNT events then measure JDBC sink throughput (e.g. task bench:run COUNT=10000000)"
     vars:
       COUNT: '{{.COUNT | default "1000000"}}'
     cmds:
@@ -189,36 +150,6 @@ tasks:
         go run ../../../../../cmd/redpanda-connect/main.go run ./producer.yaml
       - task connector:create
       - task bench:measure TOTAL={{.COUNT}}
-
-  bench:pg-count-verify:
-    desc: Compare expected row count against actual rows in bench_events
-    vars:
-      EXPECTED: '{{.EXPECTED | default "1000000"}}'
-    cmds:
-      - |
-        ACTUAL=$(psql {{.PG_DSN}} -t -c "SELECT COUNT(*) FROM bench_events;" | tr -d ' ')
-        echo "Expected : {{.EXPECTED}}"
-        echo "Actual   : $ACTUAL"
-        if [ "$ACTUAL" -eq "{{.EXPECTED}}" ]; then
-          echo "OK — row count matches"
-        else
-          echo "MISMATCH"
-        fi
-
-  bench-topic:recreate:
-    desc: Delete and recreate bench-events topic for a clean slate
-    cmds:
-      - docker exec pgkc-kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic bench-events 2>/dev/null || true
-      - |
-        until ! docker exec pgkc-kafka kafka-topics --bootstrap-server localhost:29092 \
-            --list 2>/dev/null | grep -q '^bench-events$'; do
-          sleep 1
-        done
-      - |
-        docker exec pgkc-kafka kafka-topics --bootstrap-server localhost:29092 \
-          --create --topic bench-events \
-          --partitions 16 \
-          --replication-factor 1
 
   logs:connect:
     desc: Follow Kafka Connect worker logs

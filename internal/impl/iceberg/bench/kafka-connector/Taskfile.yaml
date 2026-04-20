@@ -38,16 +38,6 @@ tasks:
     cmds:
       - curl -s -X DELETE {{.CONNECT_URL}}/connectors/iceberg-sink-bench || true
 
-  connector:pause:
-    desc: Pause the connector (stop consuming without deleting offsets)
-    cmds:
-      - curl -sf -X PUT {{.CONNECT_URL}}/connectors/iceberg-sink-bench/pause | jq .
-
-  connector:resume:
-    desc: Resume a paused connector
-    cmds:
-      - curl -sf -X PUT {{.CONNECT_URL}}/connectors/iceberg-sink-bench/resume | jq .
-
   data:load:
     desc: "Produce events to bench-events (e.g. task data:load COUNT=5000000)"
     vars:
@@ -58,44 +48,19 @@ tasks:
     cmds:
       - go run ../../../../../cmd/redpanda-connect/main.go run ./producer.yaml
 
-  topic:reset-offsets:
-    desc: Reset consumer group offsets to end of bench-events (so next connector run only processes new messages)
-    cmds:
-      - |
-        docker exec kc-kafka kafka-consumer-groups \
-          --bootstrap-server localhost:29092 \
-          --group connect-iceberg-sink-bench \
-          --topic bench-events \
-          --reset-offsets --to-latest --execute 2>/dev/null || true
-
   bench:lag:
     desc: Show current consumer lag for the Iceberg sink connector group
     cmds:
       - docker exec kc-kafka kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group connect-iceberg-sink-bench
 
   bench:offsets:
-    desc: Show end offsets (total messages) for bench-events and bench-events-transformed
+    desc: Show end offsets for bench-events and bench-events-transformed
     cmds:
       - docker exec kc-kafka kafka-get-offsets --bootstrap-server localhost:29092 --topic bench-events
       - docker exec kc-kafka kafka-get-offsets --bootstrap-server localhost:29092 --topic bench-events-transformed
 
-  # Measure throughput by timing how long it takes to drain the topic.
-  #
-  # Strategy: the topic is pre-loaded with a known number of messages (TOTAL).
-  # We poll the consumer group lag every INTERVAL seconds.  Each poll we print
-  # the current lag and a rolling msg/s rate (delta_lag / delta_time).  When lag
-  # hits zero we print the overall elapsed time and average throughput.
-  #
-  # NOTE: The Tabular Iceberg sink connector only commits Kafka offsets when it
-  # commits to Iceberg (iceberg.control.commit.interval-ms, default 10s).
-  # Between commits, lag appears frozen even though the connector is consuming.
-  # Set INTERVAL >= commit interval (10) for meaningful msg/s values.
-  #
-  # Usage:
-  #   task bench:measure TOTAL=1000000
-  #   task bench:measure TOTAL=5000000 INTERVAL=10
   bench:measure:
-    desc: "Poll lag and print msg/s until topic is drained (e.g. task bench:measure TOTAL=1000000)"
+    desc: "Poll lag and print msg/s until topic is drained (e.g. task bench:measure TOTAL=1000000 INTERVAL=10)"
     vars:
       TOTAL: '{{.TOTAL | default "1000000"}}'
       INTERVAL: '{{.INTERVAL | default "1"}}'
@@ -131,7 +96,6 @@ tasks:
           LAG=$(get_lag)
           NOW=$(date +%s)
 
-          # Wait until lag becomes positive (data arrived and connector started consuming)
           if [ -z "$START" ]; then
             if [ "$LAG" -gt 0 ] 2>/dev/null; then
               START=$NOW
@@ -169,37 +133,6 @@ tasks:
           PREV_TIME=$NOW
         done
 
-  control-topic:reset:
-    desc: Delete and recreate the control-iceberg topic to clear stale coordinator state
-    cmds:
-      - docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic control-iceberg 2>/dev/null || true
-      - |
-        until ! docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
-            --list 2>/dev/null | grep -q '^control-iceberg$'; do
-          sleep 1
-        done
-      - |
-        docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
-          --create --topic control-iceberg \
-          --partitions 1 \
-          --replication-factor 1 \
-          --config cleanup.policy=compact
-
-  bench-topic:recreate:
-    desc: Delete and recreate bench-events topic for a clean slate
-    cmds:
-      - docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic bench-events 2>/dev/null || true
-      - |
-        until ! docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
-            --list 2>/dev/null | grep -q '^bench-events$'; do
-          sleep 1
-        done
-      - |
-        docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
-          --create --topic bench-events \
-          --partitions 16 \
-          --replication-factor 1
-
   bench:transform:
     desc: "Phase 1: run RPCN transformer until bench-events is drained into bench-events-transformed"
     cmds:
@@ -236,7 +169,6 @@ tasks:
         GROUP=connect-iceberg-sink-bench
         INTERVAL=10
 
-        # Get total messages in bench-events-transformed upfront
         TOTAL=$(docker exec kc-kafka kafka-get-offsets \
           --bootstrap-server localhost:29092 \
           --topic bench-events-transformed 2>/dev/null \
@@ -290,7 +222,7 @@ tasks:
         done
 
   bench:run:
-    desc: "Full benchmark with transformation: load COUNT events, transform via RPCN, sink via Kafka Connect (e.g. task bench:run COUNT=10000000)"
+    desc: "Full benchmark: load COUNT events, transform via RPCN, sink via Kafka Connect (e.g. task bench:run COUNT=10000000)"
     vars:
       COUNT: '{{.COUNT | default "1000000"}}'
     cmds:
@@ -314,6 +246,37 @@ tasks:
         go run ../../../../../cmd/redpanda-connect/main.go run ./producer.yaml
       - task bench:transform
       - task bench:sink
+
+  control-topic:reset:
+    desc: Delete and recreate the control-iceberg topic to clear stale coordinator state
+    cmds:
+      - docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic control-iceberg 2>/dev/null || true
+      - |
+        until ! docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+            --list 2>/dev/null | grep -q '^control-iceberg$'; do
+          sleep 1
+        done
+      - |
+        docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+          --create --topic control-iceberg \
+          --partitions 1 \
+          --replication-factor 1 \
+          --config cleanup.policy=compact
+
+  bench-topic:recreate:
+    desc: Delete and recreate bench-events topic for a clean slate
+    cmds:
+      - docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic bench-events 2>/dev/null || true
+      - |
+        until ! docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+            --list 2>/dev/null | grep -q '^bench-events$'; do
+          sleep 1
+        done
+      - |
+        docker exec kc-kafka kafka-topics --bootstrap-server localhost:29092 \
+          --create --topic bench-events \
+          --partitions 16 \
+          --replication-factor 1
 
   data:reset:
     desc: Drop and recreate the benchmark.events Iceberg table (clears all data)
