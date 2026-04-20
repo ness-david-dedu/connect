@@ -101,10 +101,12 @@ Both connectors use a 10s commit window and 16 Kafka partitions. The transformat
 
 #### Transform + sink
 
-| Connector                | Throughput    |
-|--------------------------|---------------|
-| Kafka Connect (Tabular)  | 37,037 msg/s  |
-| Redpanda Connect         | 47,272 msg/s  |
+| Connector                | Kafka CPUs | Throughput    |
+|--------------------------|------------|---------------|
+| Kafka Connect (Tabular)  | unbounded  | 37,037 msg/s  |
+| Redpanda Connect         | unbounded  | 47,272 msg/s  |
+| Redpanda Connect         | 1          | 45,248 msg/s  |
+| Redpanda Connect         | 2          | 48,829 msg/s  |
 
 ### Notes
 

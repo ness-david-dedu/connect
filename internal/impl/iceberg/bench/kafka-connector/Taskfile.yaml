@@ -39,7 +39,7 @@ tasks:
       - curl -s -X DELETE {{.CONNECT_URL}}/connectors/iceberg-sink-bench || true
 
   data:load:
-    desc: "Produce events to bench-events (e.g. task data:load COUNT=5000000)"
+    desc: "Load COUNT events to Kafka (e.g. task data:load COUNT=10000000)"
     vars:
       COUNT: '{{.COUNT | default "1000000"}}'
     env:
@@ -48,122 +48,17 @@ tasks:
     cmds:
       - go run ../../../../../cmd/redpanda-connect/main.go run ./producer.yaml
 
-  bench:lag:
-    desc: Show current consumer lag for the Iceberg sink connector group
+  bench:run:
+    desc: "Sink bench-events via Kafka Connect into Iceberg (run after bench:load)"
     cmds:
-      - docker exec kc-kafka kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group connect-iceberg-sink-bench
-
-  bench:offsets:
-    desc: Show end offsets for bench-events and bench-events-transformed
-    cmds:
-      - docker exec kc-kafka kafka-get-offsets --bootstrap-server localhost:29092 --topic bench-events
-      - docker exec kc-kafka kafka-get-offsets --bootstrap-server localhost:29092 --topic bench-events-transformed
-
-  bench:measure:
-    desc: "Poll lag and print msg/s until topic is drained (e.g. task bench:measure TOTAL=1000000 INTERVAL=10)"
-    vars:
-      TOTAL: '{{.TOTAL | default "1000000"}}'
-      INTERVAL: '{{.INTERVAL | default "1"}}'
-    cmds:
+      - task connector:delete
       - |
-        GROUP=connect-iceberg-sink-bench
-        INTERVAL={{.INTERVAL}}
-        TOTAL={{.TOTAL}}
-
-        get_lag() {
-          # The Tabular connector only commits Kafka offsets at Iceberg commit time,
-          # so the LAG column ($6) is "-" mid-batch. Compute it manually:
-          #   lag = LOG-END-OFFSET($5) - CURRENT-OFFSET($4)
-          # When CURRENT-OFFSET is "-" (no commit yet) treat it as 0.
-          docker exec kc-kafka kafka-consumer-groups \
-            --bootstrap-server localhost:29092 \
-            --describe --group "$GROUP" 2>/dev/null \
-            | awk '/bench-events/ {
-                cur = ($4 == "-") ? 0 : $4
-                sum += $5 - cur
-              } END {print (NR == 0 ? -1 : sum)}'
-        }
-
-        START=""
-        INITIAL_LAG=""
-        PREV_LAG=""
-        PREV_TIME=""
-
-        printf "%-10s  %-14s  %s\n" "TIME" "LAG" "MSG/S"
-
-        while true; do
-          sleep "$INTERVAL"
-          LAG=$(get_lag)
-          NOW=$(date +%s)
-
-          if [ -z "$START" ]; then
-            if [ "$LAG" -gt 0 ] 2>/dev/null; then
-              START=$NOW
-              INITIAL_LAG=$LAG
-              PREV_LAG=$LAG
-              PREV_TIME=$NOW
-              printf "%-10s  %-14s  (timing started)\n" "$(date +%H:%M:%S)" "$LAG"
-            else
-              printf "%-10s  %-14s  (waiting for lag...)\n" "$(date +%H:%M:%S)" "$LAG"
-            fi
-            continue
-          fi
-
-          DELTA_T=$((NOW - PREV_TIME))
-          DELTA_LAG=$((PREV_LAG - LAG))
-          if [ "$DELTA_T" -gt 0 ]; then
-            RATE=$((DELTA_LAG / DELTA_T))
-          else
-            RATE=0
-          fi
-
-          printf "%-10s  %-14s  %s msg/s\n" "$(date +%H:%M:%S)" "$LAG" "$RATE"
-
-          if [ "$LAG" -eq 0 ]; then
-            ELAPSED=$((NOW - START))
-            AVG=$(( INITIAL_LAG / (ELAPSED > 0 ? ELAPSED : 1) ))
-            echo "---"
-            echo "Total messages : $INITIAL_LAG"
-            echo "Elapsed        : ${ELAPSED}s"
-            echo "Avg throughput : ${AVG} msg/s"
-            break
-          fi
-
-          PREV_LAG=$LAG
-          PREV_TIME=$NOW
-        done
-
-  bench:transform:
-    desc: "Phase 1: run RPCN transformer until bench-events is drained into bench-events-transformed"
-    cmds:
-      - |
-        go run ../../../../../cmd/redpanda-connect/main.go run ./transform_config.yaml &
-        TRANSFORM_PID=$!
-        SEEN_LAG=0
-        TRANSFORM_START=$(date +%s)
-        echo "Waiting for transform to complete..."
-        while true; do
-          sleep 5
-          LAG=$(docker exec kc-kafka kafka-consumer-groups \
-            --bootstrap-server localhost:29092 \
-            --describe --group rpcn-transform 2>/dev/null \
-            | awk '/bench-events/ { cur = ($4 == "-") ? 0 : $4; sum += $5 - cur } END {print (NR == 0 ? -1 : sum)}')
-          echo "  transform lag: $LAG"
-          if [ "$LAG" -gt 0 ] 2>/dev/null; then
-            SEEN_LAG=1
-          fi
-          if [ "$SEEN_LAG" -eq 1 ] && [ "$LAG" -eq 0 ] 2>/dev/null; then
-            TRANSFORM_ELAPSED=$(($(date +%s) - TRANSFORM_START))
-            echo "Transform complete in ${TRANSFORM_ELAPSED}s."
-            echo "$TRANSFORM_ELAPSED" > /tmp/bench_transform_elapsed
-            kill $TRANSFORM_PID 2>/dev/null || true
-            break
-          fi
-        done
-
-  bench:sink:
-    desc: "Phase 2: start Kafka Connect and measure throughput draining bench-events-transformed into Iceberg"
-    cmds:
+        docker exec kc-kafka kafka-consumer-groups \
+          --bootstrap-server localhost:29092 \
+          --group connect-iceberg-sink-bench \
+          --topic bench-events \
+          --reset-offsets --to-earliest --execute 2>/dev/null || true
+      - task control-topic:reset
       - task connector:create
       - |
         GROUP=connect-iceberg-sink-bench
@@ -171,15 +66,15 @@ tasks:
 
         TOTAL=$(docker exec kc-kafka kafka-get-offsets \
           --bootstrap-server localhost:29092 \
-          --topic bench-events-transformed 2>/dev/null \
+          --topic bench-events 2>/dev/null \
           | awk -F: '{sum += $3} END {print sum}')
-        echo "bench-events-transformed has $TOTAL messages"
+        echo "bench-events has $TOTAL messages"
 
         get_lag() {
           docker exec kc-kafka kafka-consumer-groups \
             --bootstrap-server localhost:29092 \
             --describe --group "$GROUP" 2>/dev/null \
-            | awk '/bench-events-transformed/ { cur = ($4 == "-") ? 0 : $4; sum += $5 - cur } END {print (NR == 0 ? -1 : sum)}'
+            | awk '/bench-events/ { cur = ($4 == "-") ? 0 : $4; sum += $5 - cur } END {print (NR == 0 ? -1 : sum)}'
         }
 
         START=""
@@ -205,47 +100,27 @@ tasks:
           RATE=$(( DELTA_T > 0 ? DELTA_LAG / DELTA_T : 0 ))
           printf "%-10s  %-14s  %s msg/s\n" "$(date +%H:%M:%S)" "$LAG" "$RATE"
           if [ "$LAG" -eq 0 ]; then
-            SINK_ELAPSED=$((NOW - START))
-            TRANSFORM_ELAPSED=$(cat /tmp/bench_transform_elapsed 2>/dev/null || echo 0)
-            TOTAL_ELAPSED=$((TRANSFORM_ELAPSED + SINK_ELAPSED))
-            AVG=$(( TOTAL / (TOTAL_ELAPSED > 0 ? TOTAL_ELAPSED : 1) ))
+            ELAPSED=$((NOW - START))
+            AVG=$(( TOTAL / (ELAPSED > 0 ? ELAPSED : 1) ))
             echo "---"
-            echo "Total messages   : $TOTAL"
-            echo "Transform time   : ${TRANSFORM_ELAPSED}s"
-            echo "Sink time        : ${SINK_ELAPSED}s"
-            echo "Total elapsed    : ${TOTAL_ELAPSED}s"
-            echo "Avg throughput   : ${AVG} msg/s"
+            echo "Total messages : $TOTAL"
+            echo "Elapsed        : ${ELAPSED}s"
+            echo "Avg throughput : ${AVG} msg/s"
             break
           fi
           PREV_LAG=$LAG
           PREV_TIME=$NOW
         done
 
-  bench:run:
-    desc: "Full benchmark: load COUNT events, transform via RPCN, sink via Kafka Connect (e.g. task bench:run COUNT=10000000)"
-    vars:
-      COUNT: '{{.COUNT | default "1000000"}}'
+  bench:lag:
+    desc: Show current consumer lag for the Iceberg sink connector group
     cmds:
-      - task connector:delete
-      - pkill -f transform_config.yaml || true
-      - sleep 3
-      - task control-topic:reset
-      - |
-        docker exec kc-kafka kafka-consumer-groups \
-          --bootstrap-server localhost:29092 \
-          --group connect-iceberg-sink-bench \
-          --topic bench-events-transformed \
-          --reset-offsets --to-earliest --execute 2>/dev/null || true
-        docker exec kc-kafka kafka-consumer-groups \
-          --bootstrap-server localhost:29092 \
-          --group rpcn-transform \
-          --topic bench-events \
-          --reset-offsets --to-earliest --execute 2>/dev/null || true
-      - |
-        COUNT={{.COUNT}} KAFKA_BOOTSTRAP={{.KAFKA_BOOTSTRAP}} \
-        go run ../../../../../cmd/redpanda-connect/main.go run ./producer.yaml
-      - task bench:transform
-      - task bench:sink
+      - docker exec kc-kafka kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group connect-iceberg-sink-bench
+
+  bench:offsets:
+    desc: Show end offsets for bench-events
+    cmds:
+      - docker exec kc-kafka kafka-get-offsets --bootstrap-server localhost:29092 --topic bench-events
 
   control-topic:reset:
     desc: Delete and recreate the control-iceberg topic to clear stale coordinator state

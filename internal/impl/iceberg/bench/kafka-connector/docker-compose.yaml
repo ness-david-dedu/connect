@@ -3,6 +3,7 @@ services:
   kafka:
     image: confluentinc/cp-kafka:7.7.8
     container_name: kc-kafka
+    cpus: 2
     ports:
       - "9092:9092"
     environment:
@@ -134,11 +135,6 @@ services:
         kafka-topics --bootstrap-server kafka:29092 \
           --create --if-not-exists \
           --topic bench-events \
-          --partitions 16 \
-          --replication-factor 1
-        kafka-topics --bootstrap-server kafka:29092 \
-          --create --if-not-exists \
-          --topic bench-events-transformed \
           --partitions 16 \
           --replication-factor 1
         kafka-topics --bootstrap-server kafka:29092 \

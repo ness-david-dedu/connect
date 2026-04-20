@@ -3,7 +3,7 @@
   "config": {
     "connector.class": "io.tabular.iceberg.connect.IcebergSinkConnector",
     "tasks.max": "16",
-    "topics": "bench-events-transformed",
+    "topics": "bench-events",
 
     "iceberg.catalog.type": "rest",
     "iceberg.catalog.uri": "http://iceberg-rest:8181",
