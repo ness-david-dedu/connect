@@ -1,0 +1,51 @@
+version: '3'
+
+vars:
+  ENDPOINT: http://localhost:4566
+  REGION: us-east-1
+
+env:
+  AWS_ACCESS_KEY_ID: xxxxx
+  AWS_SECRET_ACCESS_KEY: xxxxx
+  AWS_DEFAULT_REGION: "{{.REGION}}"
+
+tasks:
+  run:
+    desc: "Start LocalStack, seed bucket, and run the benchmark (e.g. task run CORES=4)"
+    vars:
+      CORES: '{{.CORES | default ""}}'
+    cmds:
+      - task: localstack:up
+      - until curl -sf http://localhost:4566/_localstack/health > /dev/null; do sleep 1; done
+      - task: create
+      - task: seed
+      - |
+        {{if .CORES}}GOMAXPROCS={{.CORES}} {{end}}go run ../../../../../cmd/redpanda-connect/main.go run ./benchmark_config.yaml 2>&1 | grep -v "WARN Response has no supported checksum"
+
+  seed:
+    desc: Upload objects to the bucket
+    cmd: go run . seed --endpoint {{.ENDPOINT}} --region {{.REGION}}
+
+  localstack:up:
+    cmd: |
+      if docker ps -q --filter name=s3-bench | grep -q .; then
+        echo "LocalStack already running."
+      else
+        docker rm -fv s3-bench 2>/dev/null || true
+        docker run -d \
+          --name s3-bench \
+          -p 4566:4566 \
+          localstack/localstack:3
+      fi
+
+  localstack:down:
+    cmd: docker rm -fv s3-bench
+
+  localstack:logs:
+    cmd: docker logs -f s3-bench
+
+  create:
+    cmd: go run . setup --endpoint {{.ENDPOINT}} --region {{.REGION}}
+
+  drop-bucket:
+    cmd: go run . drop-bucket --endpoint {{.ENDPOINT}} --region {{.REGION}}
