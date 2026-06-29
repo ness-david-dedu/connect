@@ -386,17 +386,13 @@ output:
 }
 
 func init() {
-	service.MustRegisterBatchOutput("snowflake_put", snowflakePutOutputConfig(),
+	license.MustRegisterEnterpriseBatchOutput("snowflake_put", snowflakePutOutputConfig(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (
 			output service.BatchOutput,
 			batchPolicy service.BatchPolicy,
 			maxInFlight int,
 			err error,
 		) {
-			if err = license.CheckRunningEnterprise(mgr); err != nil {
-				return
-			}
-
 			if maxInFlight, err = conf.FieldInt("max_in_flight"); err != nil {
 				return
 			}
@@ -404,9 +400,6 @@ func init() {
 				return
 			}
 			output, err = newSnowflakeWriterFromConfig(conf, mgr)
-			if err == nil {
-				output = license.WrapBatchOutput(mgr, output)
-			}
 			return
 		})
 }

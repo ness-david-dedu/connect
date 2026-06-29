@@ -36,17 +36,13 @@ const (
 )
 
 func init() {
-	service.MustRegisterBatchOutput("redpanda_common", redpandaCommonOutputConfig(),
+	license.MustRegisterEnterpriseBatchOutput("redpanda_common", redpandaCommonOutputConfig(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (
 			output service.BatchOutput,
 			batchPolicy service.BatchPolicy,
 			maxInFlight int,
 			err error,
 		) {
-			if err = license.CheckRunningEnterprise(mgr); err != nil {
-				return
-			}
-
 			if maxInFlight, err = conf.FieldMaxInFlight(); err != nil {
 				return
 			}
@@ -62,9 +58,6 @@ func init() {
 					WithYieldClientFn(
 						func(context.Context) error { return nil }),
 			)
-			if err == nil {
-				output = license.WrapBatchOutput(mgr, output)
-			}
 			return
 		})
 }

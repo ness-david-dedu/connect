@@ -266,7 +266,7 @@ func HTTPOutputFromParsed(pConf *service.ParsedConfig, mgr *service.Resources) (
 }
 
 func init() {
-	service.MustRegisterBatchOutput("otlp_http", HTTPOutputSpec(),
+	license.MustRegisterEnterpriseBatchOutput("otlp_http", HTTPOutputSpec(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (
 			o service.BatchOutput,
 			batchPolicy service.BatchPolicy,
@@ -276,11 +276,7 @@ func init() {
 			if o, err = HTTPOutputFromParsed(conf, mgr); err != nil {
 				return
 			}
-			if maxInFlight, err = conf.FieldMaxInFlight(); err != nil {
-				return
-			}
-
-			o = license.WrapBatchOutput(mgr, o)
+			maxInFlight, err = conf.FieldMaxInFlight()
 			return
 		})
 }

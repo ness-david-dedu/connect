@@ -76,7 +76,7 @@ const (
 )
 
 func init() {
-	service.MustRegisterBatchOutput("gcp_bigquery_write_api", bigQueryWriteAPISpec(),
+	license.MustRegisterEnterpriseBatchOutput("gcp_bigquery_write_api", bigQueryWriteAPISpec(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (
 			out service.BatchOutput, batchPolicy service.BatchPolicy, maxInFlight int, err error,
 		) {
@@ -87,9 +87,6 @@ func init() {
 				return
 			}
 			out, err = bigQueryWriteAPIOutputFromConfig(conf, mgr)
-			if err == nil {
-				out = license.WrapBatchOutput(mgr, out)
-			}
 			return
 		})
 }

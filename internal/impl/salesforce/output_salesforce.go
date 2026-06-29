@@ -100,7 +100,7 @@ type salesforceSinkOutput struct {
 }
 
 func init() {
-	service.MustRegisterBatchOutput(
+	license.MustRegisterEnterpriseBatchOutput(
 		"salesforce_sink", newSalesforceSinkConfigSpec(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (service.BatchOutput, service.BatchPolicy, int, error) {
 			batchSize, err := conf.FieldInt(sfsFieldBulkBatchSize)
@@ -119,7 +119,7 @@ func init() {
 			if err != nil {
 				return nil, service.BatchPolicy{}, 0, err
 			}
-			return license.WrapBatchOutput(mgr, out), service.BatchPolicy{Count: batchSize, Period: batchPeriod.String()}, maxInFlight, nil
+			return out, service.BatchPolicy{Count: batchSize, Period: batchPeriod.String()}, maxInFlight, nil
 		},
 	)
 }

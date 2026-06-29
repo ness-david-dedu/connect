@@ -61,6 +61,27 @@ func WrapBatchOutput(res *service.Resources, output service.BatchOutput) service
 	return &throttledBatchOutput{wrapped: output, throttler: t}
 }
 
+// MustRegisterEnterpriseBatchOutput registers an enterprise batch output.
+// The license check and dev-license throttle wrapping are applied automatically;
+// the ctor must not call CheckRunningEnterprise or WrapBatchOutput itself.
+func MustRegisterEnterpriseBatchOutput(
+	name string,
+	spec *service.ConfigSpec,
+	ctor func(*service.ParsedConfig, *service.Resources) (service.BatchOutput, service.BatchPolicy, int, error),
+) {
+	service.MustRegisterBatchOutput(name, spec,
+		func(conf *service.ParsedConfig, mgr *service.Resources) (service.BatchOutput, service.BatchPolicy, int, error) {
+			if err := CheckRunningEnterprise(mgr); err != nil {
+				return nil, service.BatchPolicy{}, 0, err
+			}
+			out, bp, mif, err := ctor(conf, mgr)
+			if err == nil {
+				out = WrapBatchOutput(mgr, out)
+			}
+			return out, bp, mif, err
+		})
+}
+
 // RegisterServiceFrom copies the license service and throttler from src to dst.
 // Use in agent mode so all per-stream Resources share one Service and Throttler
 // rather than each getting an independent token bucket.

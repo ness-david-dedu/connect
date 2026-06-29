@@ -183,7 +183,7 @@ func GRPCOutputFromParsed(pConf *service.ParsedConfig, mgr *service.Resources) (
 }
 
 func init() {
-	service.MustRegisterBatchOutput("otlp_grpc", GRPCOutputSpec(),
+	license.MustRegisterEnterpriseBatchOutput("otlp_grpc", GRPCOutputSpec(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (
 			o service.BatchOutput,
 			batchPolicy service.BatchPolicy,
@@ -193,11 +193,7 @@ func init() {
 			if o, err = GRPCOutputFromParsed(conf, mgr); err != nil {
 				return
 			}
-			if maxInFlight, err = conf.FieldMaxInFlight(); err != nil {
-				return
-			}
-
-			o = license.WrapBatchOutput(mgr, o)
+			maxInFlight, err = conf.FieldMaxInFlight()
 			return
 		})
 }

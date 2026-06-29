@@ -361,7 +361,7 @@ output:
 }
 
 func init() {
-	service.MustRegisterBatchOutput(
+	license.MustRegisterEnterpriseBatchOutput(
 		"snowflake_streaming",
 		snowflakeStreamingOutputConfig(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (
@@ -370,10 +370,6 @@ func init() {
 			maxInFlight int,
 			err error,
 		) {
-			if err = license.CheckRunningEnterprise(mgr); err != nil {
-				return
-			}
-
 			if maxInFlight, err = conf.FieldMaxInFlight(); err != nil {
 				return
 			}
@@ -381,9 +377,6 @@ func init() {
 				return
 			}
 			output, err = newSnowflakeStreamer(conf, mgr)
-			if err == nil {
-				output = license.WrapBatchOutput(mgr, output)
-			}
 			return
 		})
 }

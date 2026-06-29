@@ -27,7 +27,7 @@ import (
 )
 
 func init() {
-	service.MustRegisterBatchOutput(
+	license.MustRegisterEnterpriseBatchOutput(
 		"iceberg",
 		icebergOutputConfig(),
 		func(conf *service.ParsedConfig, mgr *service.Resources) (
@@ -36,28 +36,16 @@ func init() {
 			maxInFlight int,
 			err error,
 		) {
-			// Check enterprise license
-			if err = license.CheckRunningEnterprise(mgr); err != nil {
-				return
-			}
-
-			// Parse configuration
 			output, err = newIcebergOutputFromConfig(conf, mgr)
 			if err != nil {
 				return
 			}
-
-			// Get batch policy
 			if batchPolicy, err = conf.FieldBatchPolicy(ioFieldBatching); err != nil {
 				return
 			}
-
-			// Get max in flight
 			if maxInFlight, err = conf.FieldInt(ioFieldMaxInFlight); err != nil {
 				return
 			}
-
-			output = license.WrapBatchOutput(mgr, output)
 			return
 		})
 }
