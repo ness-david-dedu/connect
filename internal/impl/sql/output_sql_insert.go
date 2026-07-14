@@ -18,9 +18,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/Masterminds/squirrel"
+	hdbdriver "github.com/SAP/go-hdb/driver"
 
 	"github.com/Jeffail/shutdown"
 
@@ -60,6 +63,10 @@ func sqlInsertOutputConfig() *service.ConfigSpec {
 			Optional().
 			Advanced().
 			Example([]string{"DELAYED", "IGNORE"})).
+		Field(service.NewBoolField("upsert").
+			Description("When true and driver is hana, emit UPSERT … WITH PRIMARY KEY instead of INSERT INTO. The table must have a primary key; matching rows are updated rather than inserted, preventing duplicates on retry.").
+			Optional().
+			Advanced()).
 		Field(service.NewIntField("max_in_flight").
 			Description("The maximum number of inserts to run in parallel.").
 			Default(64))
@@ -117,7 +124,11 @@ type sqlInsertOutput struct {
 	builder squirrel.InsertBuilder
 	dbMut   sync.RWMutex
 
-	useTxStmt     bool
+	useTxStmt   bool
+	useExecMany bool   // go-hdb bulk insert via callback pattern
+	useUpsert   bool   // emit UPSERT … WITH PRIMARY KEY instead of INSERT (HANA only)
+	execManySQL string // SQL for go-hdb bulk exec (INSERT or UPSERT)
+	bulkMu      sync.Mutex
 	argsMapping   *bloblang.Executor
 	argsConverter argsConverter
 
@@ -144,6 +155,14 @@ func newSQLInsertOutputFromConfig(conf *service.ParsedConfig, mgr *service.Resou
 	}[s.driver]; in {
 		s.useTxStmt = true
 	}
+	if s.driver == "hana" {
+		s.useExecMany = true
+		if conf.Contains("upsert") {
+			if s.useUpsert, err = conf.FieldBool("upsert"); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	if s.dsn, err = conf.FieldString("dsn"); err != nil {
 		return nil, err
@@ -168,6 +187,19 @@ func newSQLInsertOutputFromConfig(conf *service.ParsedConfig, mgr *service.Resou
 	}
 
 	s.builder = squirrel.Insert(tableStr).Columns(columns...)
+	if s.useExecMany {
+		phs := make([]string, len(columns))
+		for i := range phs {
+			phs[i] = "?"
+		}
+		colList := strings.Join(columns, ", ")
+		phList := strings.Join(phs, ", ")
+		if s.useUpsert {
+			s.execManySQL = "UPSERT " + tableStr + " (" + colList + ") VALUES (" + phList + ") WITH PRIMARY KEY"
+		} else {
+			s.execManySQL = "INSERT INTO " + tableStr + " (" + colList + ") VALUES (" + phList + ")"
+		}
+	}
 	switch s.driver {
 	case "postgres", "pgx", "clickhouse":
 		s.builder = s.builder.PlaceholderFormat(squirrel.Dollar)
@@ -228,8 +260,30 @@ func (s *sqlInsertOutput) Connect(ctx context.Context) error {
 	}
 
 	var err error
-	if s.db, err = sqlOpenWithReworks(s.logger, s.driver, s.dsn); err != nil {
-		return err
+	if s.useExecMany {
+		// go-hdb bulk insert requires a connector so we can set BulkSize.
+		// sql.Open with the "hdb" driver name doesn't expose connector options.
+		ctr, ctrErr := hdbdriver.NewDSNConnector(s.dsn)
+		if ctrErr != nil {
+			return ctrErr
+		}
+		// NewDSNConnector zeros the timeout when the DSN has no timeout= param,
+		// disabling TCP read deadlines. Restore a 30 s ceiling so a blocked
+		// HANA MT_EXECUTE is guaranteed to surface as an error within one attempt.
+		ctr.SetTimeout(30 * time.Second)
+		// BulkSize > any expected batch size ensures a single MT_EXECUTE per
+		// WriteBatch call instead of chunking, which simplifies retry accounting.
+		ctr.SetBulkSize(100_000)
+		s.db = sql.OpenDB(ctr)
+		// One connection per WriteBatch: after each batch the connection is
+		// returned to the pool and immediately closed (MaxIdleConns=0). This
+		// avoids reusing a HANA session across commits, which can block the
+		// subsequent MT_EXECUTE indefinitely (server-side post-commit activity).
+		s.db.SetMaxIdleConns(0)
+	} else {
+		if s.db, err = sqlOpenWithReworks(s.logger, s.driver, s.dsn); err != nil {
+			return err
+		}
 	}
 
 	s.connSettings.apply(ctx, s.db, s.logger)
@@ -257,9 +311,79 @@ func (s *sqlInsertOutput) Connect(ctx context.Context) error {
 	return nil
 }
 
+// writeBatchHDB performs a go-hdb bulk insert for one benthos batch.
+//
+// Design notes:
+//   - bulkMu serialises concurrent WriteBatch calls: concurrent MT_EXECUTE to
+//     the same table causes HANA row-level lock contention.
+//   - (*sql.Conn).ExecContext is used instead of (*sql.DB).ExecContext because
+//     the latter wraps the call in a retry loop: on ErrBadConn it re-invokes
+//     with the same closure (idx already at len(batchArgs) → ErrEndOfRows
+//     immediately → 0 rows silently written on the retry).
+//   - A 30 s context deadline bounds the wait for HANA's MT_EXECUTE response.
+//     On expiry the go-hdb session is marked bad; (*sql.Conn).Close() then
+//     closes the underlying TCP connection, which unblocks the spawned goroutine
+//     inside go-hdb's (*stmt).ExecContext. Benthos retries WriteBatch on error,
+//     re-creating the closure with idx=0.
+//   - MaxIdleConns=0 (set in Connect) closes the connection after each batch
+//     rather than returning it to the idle pool, so the next batch always opens
+//     a fresh HANA session (no server-side state carried over from the commit).
+func (s *sqlInsertOutput) writeBatchHDB(ctx context.Context, batch service.MessageBatch) error {
+	s.bulkMu.Lock()
+	defer s.bulkMu.Unlock()
+
+	var argsExec *service.MessageBatchBloblangExecutor
+	if s.argsMapping != nil {
+		argsExec = batch.BloblangExecutor(s.argsMapping)
+	}
+	batchArgs := make([][]any, 0, len(batch))
+	for i := range batch {
+		if argsExec == nil {
+			break
+		}
+		resMsg, err := argsExec.Query(i)
+		if err != nil {
+			return err
+		}
+		iargs, err := resMsg.AsStructured()
+		if err != nil {
+			return err
+		}
+		args, ok := iargs.([]any)
+		if !ok {
+			return fmt.Errorf("mapping returned non-array result: %T", iargs)
+		}
+		batchArgs = append(batchArgs, args)
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	conn, err := s.db.Conn(execCtx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	idx := 0
+	_, err = conn.ExecContext(execCtx, s.execManySQL, func(args []any) error {
+		if idx >= len(batchArgs) {
+			return hdbdriver.ErrEndOfRows
+		}
+		copy(args, batchArgs[idx])
+		idx++
+		return nil
+	})
+	return err
+}
+
 func (s *sqlInsertOutput) WriteBatch(ctx context.Context, batch service.MessageBatch) error {
 	s.dbMut.RLock()
 	defer s.dbMut.RUnlock()
+
+	if s.useExecMany {
+		return s.writeBatchHDB(ctx, batch)
+	}
 
 	insertBuilder := s.builder
 
