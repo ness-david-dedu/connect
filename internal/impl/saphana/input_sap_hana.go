@@ -39,21 +39,21 @@ const (
 	shFieldIncrementingInitialVal = "incrementing_initial_value"
 	shFieldPollInterval           = "poll_interval"
 
-	shFieldTimestampColumn    = "timestamp_column"
+	shFieldTimestampColumn     = "timestamp_column"
 	shFieldTimestampInitialVal = "timestamp_initial_value"
-	shFieldTimestampDelay     = "timestamp_delay"
+	shFieldTimestampDelay      = "timestamp_delay"
 
 	shFieldCheckpointCache    = "checkpoint_cache"
 	shFieldCheckpointCacheKey = "checkpoint_cache_key"
 
-	shFieldNumericMapping            = "numeric_mapping"
-	shFieldMaxRetries                = "max_retries"
+	shFieldNumericMapping   = "numeric_mapping"
+	shFieldMaxRetries       = "max_retries"
 	shNumericMappingNone    = "none"
 	shNumericMappingBestFit = "best_fit"
 
-	shModeBulk                 = "bulk"
+	shModeBulk                  = "bulk"
 	shModeIncrementing          = "incrementing"
-	shModeQuery                = "query"
+	shModeQuery                 = "query"
 	shModeTimestamp             = "timestamp"
 	shModeTimestampIncrementing = "timestamp+incrementing"
 )
@@ -173,7 +173,7 @@ type sapHANAInput struct {
 	customQuery     string
 	incrementingCol string
 	hwm             any
-	hwmSafe         any // last checkpointable HWM: highest value whose tie-group is fully emitted
+	hwmSafe         any              // last checkpointable HWM: highest value whose tie-group is fully emitted
 	peekedRow       *service.Message // row buffered from peek-ahead at fetch_size boundary
 	pollInterval    time.Duration
 
@@ -199,13 +199,13 @@ type sapHANAInput struct {
 
 	bulkExhausted bool
 
-	rowColNames      []string
-	rowValues        []any
-	rowPtrs          []any
-	rowCachedSchema  any
-	rowCachedPKCols  []string
+	rowColNames       []string
+	rowValues         []any
+	rowPtrs           []any
+	rowCachedSchema   any
+	rowCachedPKCols   []string
 	rowCachedColTypes map[string]schema.Common
-	rowSchemaFetched bool
+	rowSchemaFetched  bool
 }
 
 func newSAPHANAInput(conf *service.ParsedConfig, mgr *service.Resources) (*sapHANAInput, error) {
