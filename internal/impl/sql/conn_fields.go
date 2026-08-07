@@ -170,6 +170,7 @@ func rawQueryField() *service.ConfigField {
 ` + "| `snowflake` | Question mark |" + `
 ` + "| `trino` | Question mark |" + `
 ` + "| `gocosmos` | Colon |" + `
+` + "| `hana` | Question mark |" + `
 `)
 }
 
